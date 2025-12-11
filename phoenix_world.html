@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Phoenix World - 降临现世</title>
+    <title>Phoenix World - 元宇宙漫游</title>
     <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;700&family=Noto+Serif+SC:wght@400;700&display=swap" rel="stylesheet">
     
     <style>
@@ -12,22 +12,23 @@
             overflow: hidden; 
             background-color: #000;
             font-family: 'Noto Serif SC', serif;
+            user-select: none;
         }
 
-        /* 真实背景层 */
+        /* 真实背景层 - 作为远景天空盒 */
         #bg-layer {
             position: absolute;
             top: 0; left: 0; width: 100%; height: 100%;
             background-size: cover;
             background-position: center;
             background-repeat: no-repeat;
-            transition: background-image 1s ease-in-out, transform 5s ease-out;
+            transition: background-image 1s ease-in-out;
             z-index: 0;
             /* 初始背景：雪山 */
             background-image: url('https://images.unsplash.com/photo-1519681393784-d120267933ba?q=80&w=2070&auto=format&fit=crop');
         }
 
-        /* 覆盖层，让背景稍微暗一点，突显凤凰 */
+        /* 覆盖层 */
         #overlay {
             position: absolute;
             top: 0; left: 0; width: 100%; height: 100%;
@@ -102,6 +103,7 @@
             z-index: 10;
             color: #fff;
             text-shadow: 0 2px 10px rgba(0,0,0,0.5);
+            pointer-events: none;
         }
         h1 {
             font-family: 'Cinzel', serif;
@@ -116,6 +118,16 @@
             letter-spacing: 2px;
         }
 
+        #controls-hint {
+            margin-top: 10px;
+            font-size: 0.8rem;
+            color: #ccc;
+            background: rgba(0,0,0,0.3);
+            padding: 5px 10px;
+            border-radius: 4px;
+            display: inline-block;
+        }
+
         #loader {
             position: absolute;
             top: 50%; left: 50%;
@@ -124,6 +136,7 @@
             color: white;
             font-family: 'Cinzel', serif;
             font-size: 1.5rem;
+            text-align: center;
         }
     </style>
 
@@ -144,7 +157,8 @@
 
     <div id="title">
         <h1>PHOENIX WORLD</h1>
-        <p>Real-World AR Visualization</p>
+        <p>Metaverse Exploration</p>
+        <div id="controls-hint">WSAD 或 箭头键移动 • 鼠标拖拽旋转视角</div>
     </div>
 
     <div id="ui-container">
@@ -172,36 +186,55 @@
         let scene, camera, renderer, controls;
         let phoenix, mixer;
         let dirLight, ambientLight, hemiLight;
+        let ground, gridHelper;
         const clock = new THREE.Clock();
+
+        // 移动控制状态
+        const keys = { w: false, a: false, s: false, d: false, shift: false };
+        const playerState = {
+            speed: 0,
+            maxSpeed: 15.0,
+            acceleration: 30.0,
+            deceleration: 20.0,
+            rotationSpeed: 3.0
+        };
 
         // 场景配置数据
         const SCENES = {
             snow: {
                 bg: 'https://images.unsplash.com/photo-1519681393784-d120267933ba?q=80&w=2070&auto=format&fit=crop',
-                ambient: 0xccccff, // 冷蓝环境光
-                dirColor: 0xffffff, // 纯白阳光
+                ambient: 0xccccff,
+                dirColor: 0xffffff,
                 fog: 0xaaccff,
+                fogDensity: 0.02,
+                groundColor: 0xffffff,
                 overlay: 'rgba(0,20,40,0.2)'
             },
             city: {
                 bg: 'https://images.unsplash.com/photo-1519501025264-65ba15a82390?q=80&w=2000&auto=format&fit=crop',
-                ambient: 0xaa00ff, // 紫色霓虹环境光
-                dirColor: 0x00aaff, // 青色主光
+                ambient: 0xaa00ff,
+                dirColor: 0x00aaff,
                 fog: 0x110022,
+                fogDensity: 0.03,
+                groundColor: 0x111111,
                 overlay: 'rgba(20,0,40,0.4)'
             },
             forest: {
                 bg: 'https://images.unsplash.com/photo-1448375240586-dfd8f3793371?q=80&w=2000&auto=format&fit=crop',
-                ambient: 0x228822, // 绿色环境光
-                dirColor: 0xffddaa, // 暖阳
+                ambient: 0x228822,
+                dirColor: 0xffddaa,
                 fog: 0x002200,
+                fogDensity: 0.025,
+                groundColor: 0x1a2e1a,
                 overlay: 'rgba(0,20,0,0.3)'
             },
             volcano: {
                 bg: 'https://images.unsplash.com/photo-1462331940025-496dfbfc7564?q=80&w=2000&auto=format&fit=crop',
-                ambient: 0x440000, // 暗红环境光
-                dirColor: 0xff4400, // 烈火光
+                ambient: 0x440000,
+                dirColor: 0xff4400,
                 fog: 0x220000,
+                fogDensity: 0.03,
+                groundColor: 0x1a0a0a,
                 overlay: 'rgba(40,10,0,0.3)'
             }
         };
@@ -210,61 +243,78 @@
         animate();
 
         function init() {
-            // 1. 设置透明 Canvas
+            // 1. 设置场景
             scene = new THREE.Scene();
-            // 不设置 scene.background，让 CSS 背景透出来
-            
-            renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true }); // alpha: true 是关键
+            // 启用雾效，营造深度感，隐藏地面边界
+            scene.fog = new THREE.FogExp2(0xaaccff, 0.02);
+
+            renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
             renderer.setSize(window.innerWidth, window.innerHeight);
             renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-            renderer.toneMapping = THREE.ACESFilmicToneMapping;
-            renderer.toneMappingExposure = 1.2;
             renderer.shadowMap.enabled = true;
+            renderer.shadowMap.type = THREE.PCFSoftShadowMap;
             document.body.appendChild(renderer.domElement);
 
-            camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
-            camera.position.set(-2, 1, 6);
+            // 2. 相机
+            camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 500);
+            camera.position.set(0, 5, -8); // 初始位置在凤凰身后
 
-            // 2. 灯光系统 (为了适应真实照片，需要三点布光)
-            
-            // 环境光 (Base fill)
-            ambientLight = new THREE.AmbientLight(0xccccff, 0.8);
+            // 3. 灯光系统
+            ambientLight = new THREE.AmbientLight(0xccccff, 0.6);
             scene.add(ambientLight);
 
-            // 半球光 (模拟天空和地面反射)
             hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444, 0.5);
             scene.add(hemiLight);
 
-            // 主光 (Sun/Moon)
             dirLight = new THREE.DirectionalLight(0xffffff, 2.0);
-            dirLight.position.set(5, 10, 7);
+            dirLight.position.set(20, 50, 20);
             dirLight.castShadow = true;
-            dirLight.shadow.mapSize.width = 1024;
-            dirLight.shadow.mapSize.height = 1024;
-            dirLight.shadow.bias = -0.0001;
+            dirLight.shadow.camera.top = 50;
+            dirLight.shadow.camera.bottom = -50;
+            dirLight.shadow.camera.left = -50;
+            dirLight.shadow.camera.right = 50;
+            dirLight.shadow.camera.near = 0.1;
+            dirLight.shadow.camera.far = 200;
+            dirLight.shadow.mapSize.width = 2048;
+            dirLight.shadow.mapSize.height = 2048;
             scene.add(dirLight);
 
-            // 3. 加载模型
+            // 4. 地面 (沉浸式 - 仅显示阴影)
+            const planeGeometry = new THREE.PlaneGeometry(2000, 2000);
+            const planeMaterial = new THREE.ShadowMaterial({ 
+                opacity: 0.5
+            });
+            ground = new THREE.Mesh(planeGeometry, planeMaterial);
+            ground.rotation.x = -Math.PI / 2;
+            ground.position.y = -2; // 让凤凰悬浮在空中一点
+            ground.receiveShadow = true;
+            scene.add(ground);
+
+            // 网格辅助，增强空间感 (调整得更淡，仅作为地平线参考)
+            gridHelper = new THREE.GridHelper(2000, 400, 0xffffff, 0xffffff);
+            gridHelper.position.y = -1.9;
+            gridHelper.material.transparent = true;
+            gridHelper.material.opacity = 0.1; // 极淡
+            scene.add(gridHelper);
+
+
+            // 5. 加载模型
             const loader = new GLTFLoader();
             loader.load('phoenix_bird.glb', (gltf) => {
                 phoenix = gltf.scene;
 
-                // 调整大小
                 const box = new THREE.Box3().setFromObject(phoenix);
                 const size = box.getSize(new THREE.Vector3());
                 const scale = 3.0 / Math.max(size.x, size.y, size.z);
                 phoenix.scale.setScalar(scale);
                 
-                // 材质调整：增加金属感以反射“环境”
                 phoenix.traverse(c => {
                     if(c.isMesh) {
                         c.castShadow = true;
                         c.receiveShadow = true;
-                        if(c.material) {
-                            c.material.metalness = 0.4; // 增强反射
-                            c.material.roughness = 0.5;
-                            c.material.envMapIntensity = 1.0;
-                        }
+                        c.material.metalness = 0.4;
+                        c.material.roughness = 0.5;
+                        c.material.envMapIntensity = 1.0;
                     }
                 });
 
@@ -274,58 +324,75 @@
                 mixer = new THREE.AnimationMixer(phoenix);
                 if(gltf.animations.length > 0) {
                     const action = mixer.clipAction(gltf.animations[0]);
-                    action.timeScale = 0.7; // 优雅慢飞
+                    action.timeScale = 0.8; 
                     action.play();
                 }
 
                 document.getElementById('loader').style.display = 'none';
             });
 
-            // 4. 控制器
+            // 6. 控制器 (用于鼠标旋转视角)
             controls = new OrbitControls(camera, renderer.domElement);
             controls.enableDamping = true;
             controls.enablePan = false;
-            controls.minDistance = 3;
-            controls.maxDistance = 10;
-            // 限制角度，防止看到穿帮的地面底部
-            controls.maxPolarAngle = Math.PI / 2 - 0.1;
-
+            controls.minDistance = 5;
+            controls.maxDistance = 20;
+            controls.maxPolarAngle = Math.PI / 2 - 0.05; // 防止穿地
+            
+            // 7. 事件监听
             window.addEventListener('resize', onResize);
             window.changeScene = changeScene;
-            
-            // 绑定鼠标移动做视差效果
-            document.addEventListener('mousemove', (e) => {
-                const x = (e.clientX / window.innerWidth - 0.5) * 20; // range -10 to 10px
-                const y = (e.clientY / window.innerHeight - 0.5) * 20;
-                
-                // 移动背景 div，制造伪 3D 深度
-                const bg = document.getElementById('bg-layer');
-                bg.style.transform = `scale(1.1) translate(${-x}px, ${-y}px)`;
-            });
+
+            document.addEventListener('keydown', (e) => onKey(e, true));
+            document.addEventListener('keyup', (e) => onKey(e, false));
+
+            // 初始化第一个场景
+            changeScene('snow');
+        }
+
+        function onKey(e, pressed) {
+            const key = e.key.toLowerCase();
+            switch(key) {
+                case 'w': case 'arrowup': keys.w = pressed; break;
+                case 'a': case 'arrowleft': keys.a = pressed; break;
+                case 's': case 'arrowdown': keys.s = pressed; break;
+                case 'd': case 'arrowright': keys.d = pressed; break;
+                case 'shift': keys.shift = pressed; break;
+            }
         }
 
         function changeScene(type) {
             const config = SCENES[type];
             if(!config) return;
 
-            // 1. UI 更新
-            document.querySelectorAll('.scene-btn').forEach(btn => btn.classList.remove('active'));
-            event.currentTarget.classList.add('active');
+            // UI
+            document.querySelectorAll('.scene-btn').forEach(btn => {
+                btn.classList.remove('active');
+                // Check if this button is the one for the current type
+                if (btn.getAttribute('onclick').includes(`'${type}'`)) {
+                    btn.classList.add('active');
+                }
+            });
 
-            // 2. 背景图淡入淡出 (通过 CSS)
-            const bgLayer = document.getElementById('bg-layer');
-            bgLayer.style.backgroundImage = `url('${config.bg}')`;
-            
-            const overlay = document.getElementById('overlay');
-            overlay.style.background = config.overlay;
+            // CSS 背景
+            document.getElementById('bg-layer').style.backgroundImage = `url('${config.bg}')`;
+            document.getElementById('overlay').style.background = config.overlay;
 
-            // 3. 灯光颜色平滑过渡 (Tween)
+            // 3D 环境过渡
             new TWEEN.Tween(ambientLight.color).to(new THREE.Color(config.ambient), 1000).start();
             new TWEEN.Tween(dirLight.color).to(new THREE.Color(config.dirColor), 1000).start();
+            new TWEEN.Tween(scene.fog.color).to(new THREE.Color(config.fog), 1000).start();
             
-            // 4. 调整光强
-            const targetIntesity = (type === 'city') ? 3.0 : 2.0; // 城市夜景需要更亮的主光来模拟霓虹
-            new TWEEN.Tween(dirLight).to({ intensity: targetIntesity }, 1000).start();
+            // 网格可见性调整 (城市场景显示明显一点，自然场景几乎隐藏)
+            const targetGridOpacity = (type === 'city') ? 0.2 : 0.05;
+            new TWEEN.Tween(gridHelper.material).to({ opacity: targetGridOpacity }, 1000).start();
+            
+            // 雾浓度
+            const targetFog = { density: scene.fog.density };
+            new TWEEN.Tween(targetFog)
+                .to({ density: config.fogDensity }, 1000)
+                .onUpdate(() => scene.fog.density = targetFog.density)
+                .start();
         }
 
         function onResize() {
@@ -334,20 +401,76 @@
             renderer.setSize(window.innerWidth, window.innerHeight);
         }
 
+        function updatePlayer(delta) {
+            if (!phoenix) return;
+
+            // 1. 计算移动方向 (相对于相机的视角)
+            const moveDirection = new THREE.Vector3(0, 0, 0);
+            
+            // 获取相机水平朝向
+            const cameraForward = new THREE.Vector3();
+            camera.getWorldDirection(cameraForward);
+            cameraForward.y = 0;
+            cameraForward.normalize();
+
+            const cameraRight = new THREE.Vector3();
+            cameraRight.crossVectors(cameraForward, new THREE.Vector3(0, 1, 0));
+
+            if (keys.w) moveDirection.add(cameraForward);
+            if (keys.s) moveDirection.sub(cameraForward);
+            if (keys.a) moveDirection.sub(cameraRight);
+            if (keys.d) moveDirection.add(cameraRight);
+
+            // 2. 加速/减速逻辑
+            if (moveDirection.lengthSq() > 0) {
+                moveDirection.normalize();
+                playerState.speed += playerState.acceleration * delta;
+                
+                // 旋转模型朝向移动方向
+                const targetRotation = Math.atan2(moveDirection.x, moveDirection.z);
+                // 平滑旋转
+                const rotDelta = (targetRotation - phoenix.rotation.y + Math.PI * 3) % (Math.PI * 2) - Math.PI;
+                phoenix.rotation.y += rotDelta * playerState.rotationSpeed * delta;
+                
+            } else {
+                playerState.speed -= playerState.deceleration * delta;
+            }
+
+            // 速度限制
+            const currentMaxSpeed = keys.shift ? playerState.maxSpeed * 2 : playerState.maxSpeed;
+            playerState.speed = THREE.MathUtils.clamp(playerState.speed, 0, currentMaxSpeed);
+
+            // 3. 应用位移
+            if (playerState.speed > 0) {
+                const forward = new THREE.Vector3(0, 0, 1).applyAxisAngle(new THREE.Vector3(0, 1, 0), phoenix.rotation.y);
+                const displacement = forward.multiplyScalar(playerState.speed * delta);
+                phoenix.position.add(displacement);
+
+                // 相机跟随 (保持相对位置)
+                camera.position.add(displacement);
+                controls.target.add(displacement);
+                
+                // 地面位置跟随 (伪无限地图) - 可选，这里先不移动地面，让玩家在有限的大平面跑
+                // 如果想做真正的无限，可以让地面材质 UV 滚动，或者移动地面 Mesh
+                // 这里为了简单，我们让地面足够大，并让灯光跟随
+                dirLight.position.x = phoenix.position.x + 20;
+                dirLight.position.z = phoenix.position.z + 20;
+            }
+            
+            // 4. 悬浮动画叠加
+            const time = clock.getElapsedTime();
+            phoenix.position.y = Math.sin(time * 2) * 0.5; // 上下悬浮
+        }
+
         function animate() {
             requestAnimationFrame(animate);
             const delta = clock.getDelta();
             
             if(mixer) mixer.update(delta);
+            
+            updatePlayer(delta);
             controls.update();
             TWEEN.update();
-
-            // 模拟风吹动：凤凰轻微随机摆动
-            if(phoenix) {
-                const time = clock.getElapsedTime();
-                phoenix.position.y = Math.sin(time) * 0.2;
-                phoenix.rotation.z = Math.sin(time * 0.5) * 0.05;
-            }
 
             renderer.render(scene, camera);
         }
