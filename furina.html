@@ -316,12 +316,32 @@
                         // 可以添加特效，这里简单处理
                     } else {
                         hp -= 1;
-                        // 受伤特效：玩家变红一瞬间
+                        // 受伤特效：玩家变红一瞬间 (修复版)
                         if(playerMesh) {
                             playerMesh.traverse(o => {
                                 if(o.isMesh && o.material) {
-                                    o.material.emissive = new THREE.Color(0xff0000);
-                                    setTimeout(() => { o.material.emissive = new THREE.Color(0x000000); }, 100);
+                                    // 定义闪烁函数
+                                    const flashMaterial = (mat) => {
+                                        if (mat.emissive) {
+                                            const originalColor = mat.emissive.getHex(); // 记录原色（通常是黑色）
+                                            mat.emissive.setHex(0xff0000); // 变红
+                                            mat.emissiveIntensity = 1.0;   // 确保够亮
+                                            
+                                            setTimeout(() => { 
+                                                if(mat) {
+                                                    mat.emissive.setHex(originalColor); // 恢复原色
+                                                    mat.emissiveIntensity = 0.5; // 恢复默认强度(如果之前有设置)
+                                                }
+                                            }, 100);
+                                        }
+                                    };
+
+                                    // 处理单材质或多材质数组
+                                    if (Array.isArray(o.material)) {
+                                        o.material.forEach(flashMaterial);
+                                    } else {
+                                        flashMaterial(o.material);
+                                    }
                                 }
                             });
                         }
