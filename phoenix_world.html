@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Phoenix World - 降临现世</title>
+    <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;700&family=Noto+Serif+SC:wght@400;700&display=swap" rel="stylesheet">
+    
+    <style>
+        body { 
+            margin: 0; 
+            overflow: hidden; 
+            background-color: #000;
+            font-family: 'Noto Serif SC', serif;
+        }
+
+        /* 真实背景层 */
+        #bg-layer {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background-size: cover;
+            background-position: center;
+            background-repeat: no-repeat;
+            transition: background-image 1s ease-in-out, transform 5s ease-out;
+            z-index: 0;
+            /* 初始背景：雪山 */
+            background-image: url('https://images.unsplash.com/photo-1519681393784-d120267933ba?q=80&w=2070&auto=format&fit=crop');
+        }
+
+        /* 覆盖层，让背景稍微暗一点，突显凤凰 */
+        #overlay {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.2);
+            transition: background 1s;
+            z-index: 1;
+            pointer-events: none;
+        }
+
+        /* Canvas 层 */
+        canvas {
+            position: absolute;
+            top: 0; left: 0;
+            z-index: 2;
+            outline: none;
+        }
+
+        /* UI */
+        #ui-container {
+            position: absolute;
+            bottom: 50px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 10;
+            display: flex;
+            gap: 15px;
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(15px);
+            padding: 15px 30px;
+            border-radius: 50px;
+            border: 1px solid rgba(255,255,255,0.2);
+            box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+        }
+
+        .scene-btn {
+            background: transparent;
+            border: none;
+            color: #fff;
+            font-family: 'Noto Serif SC', serif;
+            font-size: 1rem;
+            cursor: pointer;
+            padding: 10px 20px;
+            border-radius: 25px;
+            transition: all 0.3s;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            opacity: 0.7;
+        }
+
+        .scene-btn:hover {
+            opacity: 1;
+            background: rgba(255,255,255,0.1);
+        }
+
+        .scene-btn.active {
+            opacity: 1;
+            background: #fff;
+            color: #000;
+            font-weight: bold;
+            box-shadow: 0 0 15px rgba(255,255,255,0.4);
+        }
+
+        .btn-icon {
+            font-size: 1.2rem;
+        }
+
+        #title {
+            position: absolute;
+            top: 40px;
+            left: 40px;
+            z-index: 10;
+            color: #fff;
+            text-shadow: 0 2px 10px rgba(0,0,0,0.5);
+        }
+        h1 {
+            font-family: 'Cinzel', serif;
+            margin: 0;
+            font-size: 2.5rem;
+            letter-spacing: 5px;
+        }
+        p {
+            margin: 5px 0 0 0;
+            font-size: 0.9rem;
+            opacity: 0.8;
+            letter-spacing: 2px;
+        }
+
+        #loader {
+            position: absolute;
+            top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            z-index: 20;
+            color: white;
+            font-family: 'Cinzel', serif;
+            font-size: 1.5rem;
+        }
+    </style>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tween.js/18.6.4/tween.umd.js"></script>
+</head>
+<body>
+
+    <div id="bg-layer"></div>
+    <div id="overlay"></div>
+
+    <div id="title">
+        <h1>PHOENIX WORLD</h1>
+        <p>Real-World AR Visualization</p>
+    </div>
+
+    <div id="ui-container">
+        <button class="scene-btn active" onclick="changeScene('snow')">
+            <span class="btn-icon">❄️</span> 雪域神山
+        </button>
+        <button class="scene-btn" onclick="changeScene('city')">
+            <span class="btn-icon">🌃</span> 霓虹都市
+        </button>
+        <button class="scene-btn" onclick="changeScene('forest')">
+            <span class="btn-icon">🌿</span> 迷雾森林
+        </button>
+        <button class="scene-btn" onclick="changeScene('volcano')">
+            <span class="btn-icon">🌋</span> 冰岛熔岩
+        </button>
+    </div>
+
+    <div id="loader">SUMMONING...</div>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+        let scene, camera, renderer, controls;
+        let phoenix, mixer;
+        let dirLight, ambientLight, hemiLight;
+        const clock = new THREE.Clock();
+
+        // 场景配置数据
+        const SCENES = {
+            snow: {
+                bg: 'https://images.unsplash.com/photo-1519681393784-d120267933ba?q=80&w=2070&auto=format&fit=crop',
+                ambient: 0xccccff, // 冷蓝环境光
+                dirColor: 0xffffff, // 纯白阳光
+                fog: 0xaaccff,
+                overlay: 'rgba(0,20,40,0.2)'
+            },
+            city: {
+                bg: 'https://images.unsplash.com/photo-1519501025264-65ba15a82390?q=80&w=2000&auto=format&fit=crop',
+                ambient: 0xaa00ff, // 紫色霓虹环境光
+                dirColor: 0x00aaff, // 青色主光
+                fog: 0x110022,
+                overlay: 'rgba(20,0,40,0.4)'
+            },
+            forest: {
+                bg: 'https://images.unsplash.com/photo-1448375240586-dfd8f3793371?q=80&w=2000&auto=format&fit=crop',
+                ambient: 0x228822, // 绿色环境光
+                dirColor: 0xffddaa, // 暖阳
+                fog: 0x002200,
+                overlay: 'rgba(0,20,0,0.3)'
+            },
+            volcano: {
+                bg: 'https://images.unsplash.com/photo-1462331940025-496dfbfc7564?q=80&w=2000&auto=format&fit=crop',
+                ambient: 0x440000, // 暗红环境光
+                dirColor: 0xff4400, // 烈火光
+                fog: 0x220000,
+                overlay: 'rgba(40,10,0,0.3)'
+            }
+        };
+
+        init();
+        animate();
+
+        function init() {
+            // 1. 设置透明 Canvas
+            scene = new THREE.Scene();
+            // 不设置 scene.background，让 CSS 背景透出来
+            
+            renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true }); // alpha: true 是关键
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+            renderer.toneMapping = THREE.ACESFilmicToneMapping;
+            renderer.toneMappingExposure = 1.2;
+            renderer.shadowMap.enabled = true;
+            document.body.appendChild(renderer.domElement);
+
+            camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
+            camera.position.set(-2, 1, 6);
+
+            // 2. 灯光系统 (为了适应真实照片，需要三点布光)
+            
+            // 环境光 (Base fill)
+            ambientLight = new THREE.AmbientLight(0xccccff, 0.8);
+            scene.add(ambientLight);
+
+            // 半球光 (模拟天空和地面反射)
+            hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444, 0.5);
+            scene.add(hemiLight);
+
+            // 主光 (Sun/Moon)
+            dirLight = new THREE.DirectionalLight(0xffffff, 2.0);
+            dirLight.position.set(5, 10, 7);
+            dirLight.castShadow = true;
+            dirLight.shadow.mapSize.width = 1024;
+            dirLight.shadow.mapSize.height = 1024;
+            dirLight.shadow.bias = -0.0001;
+            scene.add(dirLight);
+
+            // 3. 加载模型
+            const loader = new GLTFLoader();
+            loader.load('phoenix_bird.glb', (gltf) => {
+                phoenix = gltf.scene;
+
+                // 调整大小
+                const box = new THREE.Box3().setFromObject(phoenix);
+                const size = box.getSize(new THREE.Vector3());
+                const scale = 3.0 / Math.max(size.x, size.y, size.z);
+                phoenix.scale.setScalar(scale);
+                
+                // 材质调整：增加金属感以反射“环境”
+                phoenix.traverse(c => {
+                    if(c.isMesh) {
+                        c.castShadow = true;
+                        c.receiveShadow = true;
+                        if(c.material) {
+                            c.material.metalness = 0.4; // 增强反射
+                            c.material.roughness = 0.5;
+                            c.material.envMapIntensity = 1.0;
+                        }
+                    }
+                });
+
+                scene.add(phoenix);
+
+                // 动画
+                mixer = new THREE.AnimationMixer(phoenix);
+                if(gltf.animations.length > 0) {
+                    const action = mixer.clipAction(gltf.animations[0]);
+                    action.timeScale = 0.7; // 优雅慢飞
+                    action.play();
+                }
+
+                document.getElementById('loader').style.display = 'none';
+            });
+
+            // 4. 控制器
+            controls = new OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            controls.enablePan = false;
+            controls.minDistance = 3;
+            controls.maxDistance = 10;
+            // 限制角度，防止看到穿帮的地面底部
+            controls.maxPolarAngle = Math.PI / 2 - 0.1;
+
+            window.addEventListener('resize', onResize);
+            window.changeScene = changeScene;
+            
+            // 绑定鼠标移动做视差效果
+            document.addEventListener('mousemove', (e) => {
+                const x = (e.clientX / window.innerWidth - 0.5) * 20; // range -10 to 10px
+                const y = (e.clientY / window.innerHeight - 0.5) * 20;
+                
+                // 移动背景 div，制造伪 3D 深度
+                const bg = document.getElementById('bg-layer');
+                bg.style.transform = `scale(1.1) translate(${-x}px, ${-y}px)`;
+            });
+        }
+
+        function changeScene(type) {
+            const config = SCENES[type];
+            if(!config) return;
+
+            // 1. UI 更新
+            document.querySelectorAll('.scene-btn').forEach(btn => btn.classList.remove('active'));
+            event.currentTarget.classList.add('active');
+
+            // 2. 背景图淡入淡出 (通过 CSS)
+            const bgLayer = document.getElementById('bg-layer');
+            bgLayer.style.backgroundImage = `url('${config.bg}')`;
+            
+            const overlay = document.getElementById('overlay');
+            overlay.style.background = config.overlay;
+
+            // 3. 灯光颜色平滑过渡 (Tween)
+            new TWEEN.Tween(ambientLight.color).to(new THREE.Color(config.ambient), 1000).start();
+            new TWEEN.Tween(dirLight.color).to(new THREE.Color(config.dirColor), 1000).start();
+            
+            // 4. 调整光强
+            const targetIntesity = (type === 'city') ? 3.0 : 2.0; // 城市夜景需要更亮的主光来模拟霓虹
+            new TWEEN.Tween(dirLight).to({ intensity: targetIntesity }, 1000).start();
+        }
+
+        function onResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            const delta = clock.getDelta();
+            
+            if(mixer) mixer.update(delta);
+            controls.update();
+            TWEEN.update();
+
+            // 模拟风吹动：凤凰轻微随机摆动
+            if(phoenix) {
+                const time = clock.getElapsedTime();
+                phoenix.position.y = Math.sin(time) * 0.2;
+                phoenix.rotation.z = Math.sin(time * 0.5) * 0.05;
+            }
+
+            renderer.render(scene, camera);
+        }
+    </script>
+</body>
+</html>

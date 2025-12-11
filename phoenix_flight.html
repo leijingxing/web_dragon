@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Phoenix Flight - 3D 实时穿越</title>
+    <link href="https://fonts.googleapis.com/css2?family=ZCOOL+XiaoWei&family=Orbitron:wght@500&display=swap" rel="stylesheet">
+    
+    <style>
+        body { margin: 0; overflow: hidden; background: #000; user-select: none; }
+
+        /* UI */
+        #ui-container {
+            position: absolute;
+            bottom: 40px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 10;
+            display: flex;
+            gap: 20px;
+            background: rgba(0, 0, 0, 0.6);
+            padding: 15px 30px;
+            border-radius: 50px;
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255,255,255,0.2);
+        }
+
+        .location-btn {
+            background: transparent;
+            border: 1px solid rgba(255,255,255,0.3);
+            color: #ddd;
+            padding: 10px 24px;
+            border-radius: 25px;
+            cursor: pointer;
+            font-family: 'ZCOOL XiaoWei', serif;
+            font-size: 1.1rem;
+            transition: all 0.3s;
+        }
+
+        .location-btn:hover { background: rgba(255,255,255,0.1); color: #fff; }
+        .location-btn.active {
+            background: #d4af37; color: #000; border-color: #d4af37;
+            font-weight: bold; box-shadow: 0 0 20px rgba(212, 175, 55, 0.4);
+        }
+
+        #title {
+            position: absolute; top: 30px; left: 30px; z-index: 10; color: #fff;
+            pointer-events: none;
+        }
+        h1 { font-family: 'ZCOOL XiaoWei', serif; margin: 0; font-size: 3rem; text-shadow: 0 0 10px rgba(0,0,0,0.8); }
+        .subtitle { font-family: 'Orbitron', sans-serif; font-size: 0.8rem; letter-spacing: 3px; color: rgba(255,255,255,0.7); margin-top: 5px; }
+
+        #loader {
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            z-index: 100; color: #d4af37; font-family: 'ZCOOL XiaoWei', serif; font-size: 1.5rem;
+        }
+    </style>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tween.js/18.6.4/tween.umd.js"></script>
+</head>
+<body>
+
+    <div id="title">
+        <h1>神鸾御风</h1>
+        <p class="subtitle">REAL-TIME 3D GENERATION</p>
+    </div>
+
+    <div id="ui-container">
+        <button class="location-btn active" onclick="switchMode('corridor')">皇家长廊</button>
+        <button class="location-btn" onclick="switchMode('city')">霓虹夜都</button>
+        <button class="location-btn" onclick="switchMode('cloud')">云海仙境</button>
+    </div>
+
+    <div id="loader">正在生成世界...</div>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+        import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+        import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+        import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+
+        // --- 核心 ---
+        let scene, camera, renderer, composer, mixer;
+        let phoenix;
+        const clock = new THREE.Clock();
+        
+        // --- 场景管理 ---
+        let currentMode = 'corridor';
+        const envObjects = []; // 存放当前场景的所有移动物体
+        let groundMirror;
+        let speed = 20; // 飞行速度
+
+        // 颜色配置
+        const THEMES = {
+            corridor: { bg: 0x220000, fog: 0x440000, light: 0xffaa00, ambient: 0x552222 },
+            city:     { bg: 0x000510, fog: 0x001133, light: 0x00ffff, ambient: 0x110022 },
+            cloud:    { bg: 0x88ccff, fog: 0xffffff, light: 0xffffee, ambient: 0x6688aa }
+        };
+
+        // 灯光引用
+        let dirLight, ambientLight;
+
+        init();
+        animate();
+
+        function init() {
+            // 1. Setup
+            scene = new THREE.Scene();
+            scene.fog = new THREE.FogExp2(THEMES.corridor.fog, 0.03);
+            scene.background = new THREE.Color(THEMES.corridor.bg);
+
+            camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 200);
+            camera.position.set(0, 2, 8);
+
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
+            renderer.toneMapping = THREE.ACESFilmicToneMapping;
+            document.body.appendChild(renderer.domElement);
+
+            // 2. Post-processing (Bloom)
+            const renderScene = new RenderPass(scene, camera);
+            const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 1.5, 0.4, 0.85);
+            bloomPass.threshold = 0.3;
+            bloomPass.strength = 0.8;
+            bloomPass.radius = 0.5;
+            
+            composer = new EffectComposer(renderer);
+            composer.addPass(renderScene);
+            composer.addPass(bloomPass);
+
+            // 3. Lights
+            ambientLight = new THREE.AmbientLight(THEMES.corridor.ambient, 1);
+            scene.add(ambientLight);
+
+            dirLight = new THREE.DirectionalLight(THEMES.corridor.light, 2);
+            dirLight.position.set(0, 10, 5);
+            dirLight.castShadow = true;
+            scene.add(dirLight);
+
+            // 4. Load Phoenix
+            const loader = new GLTFLoader();
+            loader.load('phoenix_bird.glb', (gltf) => {
+                const model = gltf.scene;
+
+                // 【方向修正】
+                // 原模型默认是横向飞行的（头朝右），这里我们让它绕 Y 轴旋转 90 度，
+                // 这样它的头就会指向屏幕内（-Z），变成向前飞。
+                model.rotation.y = Math.PI / 2;
+
+                // 创建一个父容器 Group
+                // 这样后续的位移和倾斜动画操作 phoenix 容器时，不会破坏内部的朝向修正
+                phoenix = new THREE.Group();
+                phoenix.add(model);
+
+                // Scale
+                const box = new THREE.Box3().setFromObject(model);
+                const scale = 2.5 / box.getSize(new THREE.Vector3()).x;
+                phoenix.scale.setScalar(scale);
+                
+                // Material
+                model.traverse(c => {
+                    if(c.isMesh) {
+                        c.castShadow = true;
+                        if(c.material) {
+                            c.material.emissiveIntensity = 0.2;
+                            c.material.metalness = 0.5;
+                        }
+                    }
+                });
+
+                scene.add(phoenix);
+
+                // Animation
+                mixer = new THREE.AnimationMixer(model);
+                const action = mixer.clipAction(gltf.animations[0]);
+                action.timeScale = 1.2;
+                action.play();
+
+                document.getElementById('loader').style.display = 'none';
+                
+                // Start first scene
+                buildCorridor();
+            });
+
+            // 5. Input
+            window.addEventListener('resize', onResize);
+            window.addEventListener('mousemove', onMouseMove);
+            window.switchMode = switchMode;
+        }
+
+        // --- 场景构建逻辑 ---
+
+        function clearEnv() {
+            envObjects.forEach(obj => scene.remove(obj));
+            envObjects.length = 0;
+        }
+
+        // 场景1: 皇家长廊 (红柱 + 灯笼)
+        function buildCorridor() {
+            clearEnv();
+            speed = 15;
+            
+            // 柱子几何体
+            const pillarGeo = new THREE.CylinderGeometry(0.8, 0.8, 15, 16);
+            const pillarMat = new THREE.MeshPhongMaterial({ color: 0x880000 }); // 红柱
+            
+            // 地面 (无限滚动的纹理效果用移动物体模拟)
+            // 这里为了简单，我们生成很多个横梁
+            
+            for(let i=0; i<20; i++) {
+                // 左柱
+                const pL = new THREE.Mesh(pillarGeo, pillarMat);
+                pL.position.set(-8, 0, -i * 10);
+                scene.add(pL);
+                envObjects.push(pL);
+
+                // 右柱
+                const pR = new THREE.Mesh(pillarGeo, pillarMat);
+                pR.position.set(8, 0, -i * 10);
+                scene.add(pR);
+                envObjects.push(pR);
+
+                // 顶部横梁
+                const beam = new THREE.Mesh(new THREE.BoxGeometry(18, 1, 1), new THREE.MeshPhongMaterial({color: 0xd4af37})); // 金色
+                beam.position.set(0, 7, -i * 10);
+                scene.add(beam);
+                envObjects.push(beam);
+                
+                // 地面装饰板
+                const floorTile = new THREE.Mesh(new THREE.PlaneGeometry(16, 2), new THREE.MeshPhongMaterial({color: 0x553333}));
+                floorTile.rotation.x = -Math.PI/2;
+                floorTile.position.set(0, -4, -i * 10);
+                scene.add(floorTile);
+                envObjects.push(floorTile);
+            }
+        }
+
+        // 场景2: 霓虹夜都 (发光盒子)
+        function buildCity() {
+            clearEnv();
+            speed = 40; // 高速
+
+            const boxGeo = new THREE.BoxGeometry(2, 10, 2);
+            
+            for(let i=0; i<60; i++) {
+                // 随机高度和颜色
+                const h = Math.random() * 20 + 5;
+                const color = Math.random() > 0.5 ? 0x00ffff : 0xff00ff;
+                
+                const mat = new THREE.MeshStandardMaterial({
+                    color: 0x111111,
+                    emissive: color,
+                    emissiveIntensity: 0.8,
+                    roughness: 0.2
+                });
+
+                const building = new THREE.Mesh(new THREE.BoxGeometry(Math.random()*3+2, h, Math.random()*3+2), mat);
+                
+                // 随机分布在左右两侧
+                const x = (Math.random() > 0.5 ? 1 : -1) * (Math.random() * 20 + 8);
+                const z = -Math.random() * 200;
+                
+                building.position.set(x, h/2 - 10, z); // 底部对齐
+                scene.add(building);
+                envObjects.push(building);
+            }
+            
+            // 底部光流线
+            const lineGeo = new THREE.BoxGeometry(0.2, 0.2, 200);
+            const lineMat = new THREE.MeshBasicMaterial({color: 0x00aaff});
+            for(let k=0; k<5; k++) {
+                const line = new THREE.Mesh(lineGeo, lineMat);
+                line.position.set((k-2)*4, -5, -100);
+                scene.add(line);
+                envObjects.push(line);
+            }
+        }
+
+        // 场景3: 云海 (半透明球体/平面)
+        function buildCloud() {
+            clearEnv();
+            speed = 10; // 慢速
+
+            const cloudGeo = new THREE.SphereGeometry(4, 8, 8);
+            const cloudMat = new THREE.MeshBasicMaterial({
+                color: 0xffffff,
+                transparent: true,
+                opacity: 0.6
+            });
+
+            for(let i=0; i<40; i++) {
+                const cloud = new THREE.Mesh(cloudGeo, cloudMat);
+                // 随机分布
+                const x = (Math.random() - 0.5) * 50;
+                const y = Math.random() * 10 - 8; // 在脚下
+                const z = -Math.random() * 150;
+                
+                cloud.position.set(x, y, z);
+                cloud.scale.set(Math.random()*2+1, 0.5, Math.random()*2+1); // 压扁
+                
+                scene.add(cloud);
+                envObjects.push(cloud);
+            }
+        }
+
+
+        // --- 逻辑控制 ---
+
+        function switchMode(mode) {
+            if(currentMode === mode) return;
+            currentMode = mode;
+            
+            // UI Update
+            document.querySelectorAll('.location-btn').forEach(b => b.classList.remove('active'));
+            event.target.classList.add('active');
+
+            // Theme Transition
+            const theme = THEMES[mode];
+            new TWEEN.Tween(scene.background).to(new THREE.Color(theme.bg), 1000).start();
+            new TWEEN.Tween(scene.fog.color).to(new THREE.Color(theme.fog), 1000).start();
+            new TWEEN.Tween(ambientLight.color).to(new THREE.Color(theme.ambient), 1000).start();
+            new TWEEN.Tween(dirLight.color).to(new THREE.Color(theme.light), 1000).start();
+
+            // Rebuild Scene
+            // 先淡出旧物体? 简化起见，直接重置
+            if(mode === 'corridor') buildCorridor();
+            if(mode === 'city') buildCity();
+            if(mode === 'cloud') buildCloud();
+        }
+
+        function onMouseMove(e) {
+            if (!phoenix) return;
+            // 归一化
+            const x = (e.clientX / window.innerWidth) * 2 - 1;
+            const y = -(e.clientY / window.innerHeight) * 2 + 1;
+
+            // 姿态控制
+            const targetX = x * 6; // 左右移动范围
+            const targetY = y * 4; // 上下移动范围
+            const targetRotZ = -x * 0.8; // 侧倾
+            
+            new TWEEN.Tween(phoenix.position).to({ x: targetX, y: targetY }, 500).start();
+            new TWEEN.Tween(phoenix.rotation).to({ z: targetRotZ, x: y * 0.4 }, 500).start();
+        }
+
+        function onResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            composer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            const delta = clock.getDelta();
+            
+            if (mixer) mixer.update(delta);
+            TWEEN.update();
+
+            // --- 核心循环：无限移动环境物体 ---
+            envObjects.forEach(obj => {
+                obj.position.z += speed * delta; // 向摄像机移动
+
+                // 如果跑到了摄像机后面 (z > camera.z)，就瞬移回远处
+                if (obj.position.z > 10) {
+                    obj.position.z -= 200; // 循环距离
+                    
+                    // 稍微随机化一点位置，避免重复感太强
+                    if (currentMode === 'city') {
+                        // 重新随机高度
+                         // (InstancedMesh 会更高效，但这里为了简单用 Mesh)
+                    }
+                }
+            });
+
+            // 简单的摄像机跟随抖动
+            camera.position.x += (Math.sin(clock.elapsedTime * 2) * 0.02 - camera.position.x) * 0.05;
+
+            composer.render();
+        }
+    </script>
+</body>
+</html>
