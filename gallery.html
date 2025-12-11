@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D Model Gallery - 珍藏阁</title>
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@300;700&display=swap" rel="stylesheet">
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #1a1a1a; font-family: 'Noto Serif SC', serif; color: #fff; }
+        
+        #sidebar {
+            position: absolute;
+            left: 0;
+            top: 0;
+            bottom: 0;
+            width: 250px;
+            background: rgba(0, 0, 0, 0.8);
+            backdrop-filter: blur(10px);
+            padding: 20px;
+            box-sizing: border-box;
+            border-right: 1px solid rgba(255, 255, 255, 0.1);
+            z-index: 10;
+            overflow-y: auto;
+            transform: translateX(0);
+            transition: transform 0.3s ease;
+        }
+
+        #sidebar.collapsed {
+            transform: translateX(-100%);
+        }
+
+        h2 {
+            margin-top: 0;
+            font-weight: 300;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+            padding-bottom: 10px;
+            letter-spacing: 2px;
+        }
+
+        .model-item {
+            display: block;
+            width: 100%;
+            padding: 15px;
+            margin-bottom: 10px;
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid transparent;
+            color: #ccc;
+            text-align: left;
+            cursor: pointer;
+            transition: all 0.2s;
+            border-radius: 4px;
+            font-family: inherit;
+        }
+
+        .model-item:hover {
+            background: rgba(255, 255, 255, 0.15);
+            color: #fff;
+        }
+
+        .model-item.active {
+            background: rgba(212, 175, 55, 0.2);
+            border-color: rgba(212, 175, 55, 0.5);
+            color: #ffd700;
+        }
+
+        #toggle-btn {
+            position: absolute;
+            left: 250px;
+            top: 20px;
+            background: rgba(0, 0, 0, 0.5);
+            color: #fff;
+            border: none;
+            padding: 10px 15px;
+            cursor: pointer;
+            z-index: 11;
+            transition: left 0.3s ease;
+            border-radius: 0 4px 4px 0;
+        }
+        
+        #sidebar.collapsed + #toggle-btn {
+            left: 0;
+        }
+
+        #viewer {
+            position: absolute;
+            top: 0; left: 0; right: 0; bottom: 0;
+            z-index: 1;
+            background: radial-gradient(circle at center, #2b2b2b 0%, #1a1a1a 100%);
+        }
+
+        #loading {
+            position: absolute;
+            top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            z-index: 20;
+            pointer-events: none;
+            font-size: 1.2em;
+            letter-spacing: 3px;
+        }
+        
+        .info-panel {
+            position: absolute;
+            bottom: 20px;
+            right: 20px;
+            text-align: right;
+            pointer-events: none;
+            opacity: 0.7;
+        }
+    </style>
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+</head>
+<body>
+
+    <div id="sidebar">
+        <h2>模型库 Gallery</h2>
+        <div id="model-list">
+            <!-- JS will populate this -->
+        </div>
+    </div>
+    <button id="toggle-btn">☰</button>
+
+    <div id="loading">选择模型以查看...</div>
+    
+    <div class="info-panel">
+        <p>左键旋转 | 右键平移 | 滚轮缩放</p>
+    </div>
+
+    <div id="viewer"></div>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+        import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+        // --- 配置：在这里添加新模型 ---
+        const models = [
+            { name: "凤凰 (Phoenix)", path: "phoenix_bird.glb" },
+            { name: "雪龙 (Snow Dragon)", path: "snow_dragon.glb" },
+            { name: "少女 (Columbina)", path: "columbina_rigged_free.glb" },
+            { name: "芙宁娜 (Furina)", path: "genshin_impact_furina.glb" }
+        ];
+
+        let scene, camera, renderer, controls, mixer;
+        let currentModel = null;
+        const clock = new THREE.Clock();
+
+        init();
+        animate();
+
+        function init() {
+            // UI Setup
+            const list = document.getElementById('model-list');
+            models.forEach((m, index) => {
+                const btn = document.createElement('button');
+                btn.className = 'model-item';
+                btn.innerText = m.name;
+                btn.onclick = () => loadModel(m.path, btn);
+                list.appendChild(btn);
+                
+                // 默认加载第一个
+                if(index === 0) btn.click();
+            });
+
+            document.getElementById('toggle-btn').onclick = () => {
+                document.getElementById('sidebar').classList.toggle('collapsed');
+            };
+
+            // 3D Setup
+            const container = document.getElementById('viewer');
+            
+            renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+            renderer.setPixelRatio(window.devicePixelRatio);
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.outputColorSpace = THREE.SRGBColorSpace;
+            container.appendChild(renderer.domElement);
+
+            scene = new THREE.Scene();
+            
+            // 使用 PMREMGenerator 生成高质量环境光，无需手动打灯，展示模型最方便
+            const pmremGenerator = new THREE.PMREMGenerator(renderer);
+            scene.environment = pmremGenerator.fromScene(new RoomEnvironment(), 0.04).texture;
+
+            // 辅助网格
+            const grid = new THREE.GridHelper(20, 20, 0x444444, 0x222222);
+            scene.add(grid);
+
+            camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
+            camera.position.set(5, 2, 5);
+
+            controls = new OrbitControls(camera, renderer.domElement);
+            controls.target.set(0, 1, 0);
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.05;
+
+            window.addEventListener('resize', onResize);
+        }
+
+        function loadModel(path, btnElement) {
+            // UI State
+            document.querySelectorAll('.model-item').forEach(b => b.classList.remove('active'));
+            if(btnElement) btnElement.classList.add('active');
+
+            const loaderDiv = document.getElementById('loading');
+            loaderDiv.style.display = 'block';
+            loaderDiv.innerText = "正在加载 " + path + "...";
+
+            // Cleanup old model
+            if (currentModel) {
+                scene.remove(currentModel);
+                if(mixer) mixer.stopAllAction();
+                mixer = null;
+                currentModel = null;
+            }
+
+            const loader = new GLTFLoader();
+            loader.load(path, (gltf) => {
+                currentModel = gltf.scene;
+
+                // Auto Scale & Center
+                const box = new THREE.Box3().setFromObject(currentModel);
+                const size = box.getSize(new THREE.Vector3());
+                const center = box.getCenter(new THREE.Vector3());
+                
+                // 归一化缩放：让模型最大边长约为 4
+                const maxDim = Math.max(size.x, size.y, size.z);
+                const scale = 4.0 / maxDim;
+                
+                currentModel.scale.setScalar(scale);
+                // 居中到底部 (y=0)
+                currentModel.position.x = -center.x * scale;
+                currentModel.position.y = -box.min.y * scale; // 让脚底贴地
+                currentModel.position.z = -center.z * scale;
+
+                scene.add(currentModel);
+
+                // Animation
+                if (gltf.animations && gltf.animations.length > 0) {
+                    mixer = new THREE.AnimationMixer(currentModel);
+                    const action = mixer.clipAction(gltf.animations[0]);
+                    action.play();
+                }
+
+                loaderDiv.style.display = 'none';
+
+            }, (xhr) => {
+                const percent = (xhr.loaded / xhr.total * 100).toFixed(0);
+                loaderDiv.innerText = `加载中... ${percent}%`;
+            }, (error) => {
+                console.error(error);
+                loaderDiv.innerText = "加载失败: " + path;
+            });
+        }
+
+        function onResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            const delta = clock.getDelta();
+            if (mixer) mixer.update(delta);
+            controls.update();
+            renderer.render(scene, camera);
+        }
+    </script>
+</body>
+</html>
