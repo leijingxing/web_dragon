@@ -1,0 +1,505 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Genshin Impact - Abyss Drift</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #000; font-family: 'Segoe UI', sans-serif; user-select: none; }
+        
+        #ui-layer {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none;
+        }
+
+        #score-board {
+            position: absolute; top: 30px; left: 30px;
+            color: #fff; text-shadow: 0 0 10px #00ffff;
+        }
+        h1 { margin: 0; font-size: 2rem; font-weight: 300; letter-spacing: 2px; }
+        #score { font-size: 4rem; font-weight: bold; margin: 0; font-family: monospace; }
+        
+        #instructions {
+            position: absolute; bottom: 30px; left: 50%; transform: translateX(-50%);
+            color: rgba(255,255,255,0.7); font-size: 1rem; text-align: center;
+            background: rgba(0,0,0,0.5); padding: 10px 20px; border-radius: 20px;
+        }
+        
+        #loading {
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            color: #00ffff; font-size: 1.5rem; letter-spacing: 5px;
+            text-shadow: 0 0 20px #00ffff;
+        }
+
+        /* 受到伤害时的红屏特效 */
+        #damage-overlay {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: radial-gradient(circle, transparent 50%, red 100%);
+            opacity: 0; transition: opacity 0.2s; pointer-events: none;
+        }
+    </style>
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+</head>
+<body>
+
+    <div id="damage-overlay"></div>
+    <div id="ui-layer">
+        <div id="score-board">
+            <h1>SPIRIT ORBS</h1>
+            <p id="score">0</p>
+        </div>
+        <div id="instructions">
+            [W/A/S/D] 移动 · [SPACE] 冲刺<br>收集蓝色光球 · 躲避红色尖刺
+        </div>
+    </div>
+    
+    <div id="loading">正在连接提瓦特...</div>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+        // 移除 Draco，因为 gallery.html 证明了不需要它也能加载
+        import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+        import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+        import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+        import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js'; // 引入环境光
+
+        // ... (Config keeps same)
+        const CONFIG = {
+            speed: 15,          // 基础移速
+            dashSpeed: 30,      // 冲刺速度
+            turnSpeed: 8,       // 转身速度
+            friction: 0.9,      // 惯性摩擦 (越小停得越快)
+            acceleration: 1.5,  // 加速度
+            bounds: 40          // 地图边界范围 (+-40)
+        };
+
+        // ... (Globals keep same)
+        let scene, camera, renderer, composer;
+        let player, playerModel;
+        let mixer;
+        const clock = new THREE.Clock();
+        
+        let score = 0;
+        const keys = { w: false, a: false, s: false, d: false, space: false };
+        const playerVelocity = new THREE.Vector3();
+        
+        const orbs = [];
+        const obstacles = [];
+        let bones = { spine: null, head: null };
+
+        init();
+        animate();
+
+        function init() {
+            // ... (Scene setup keeps same)
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x050510);
+            scene.fog = new THREE.FogExp2(0x050510, 0.025);
+
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.shadowMap.enabled = true;
+            // 关键：与 gallery.html 保持一致的色彩空间
+            renderer.outputColorSpace = THREE.SRGBColorSpace; 
+            document.body.appendChild(renderer.domElement);
+
+            // 关键：添加环境光贴图，否则金属材质会变黑
+            const pmremGenerator = new THREE.PMREMGenerator(renderer);
+            scene.environment = pmremGenerator.fromScene(new RoomEnvironment(), 0.04).texture;
+
+            camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
+            camera.position.set(0, 8, 12);
+            
+            const ambient = new THREE.AmbientLight(0x444466, 0.8);
+            scene.add(ambient);
+
+            const dirLight = new THREE.DirectionalLight(0xffffff, 1.5);
+            dirLight.position.set(10, 20, 10);
+            dirLight.castShadow = true;
+            dirLight.shadow.mapSize.set(2048, 2048);
+            dirLight.shadow.camera.left = -30;
+            dirLight.shadow.camera.right = 30;
+            dirLight.shadow.camera.top = 30;
+            dirLight.shadow.camera.bottom = -30;
+            scene.add(dirLight);
+
+            const renderScene = new RenderPass(scene, camera);
+            const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 1.5, 0.4, 0.85);
+            bloomPass.threshold = 0.2;
+            bloomPass.strength = 1.0;
+            bloomPass.radius = 0.5;
+            
+            composer = new EffectComposer(renderer);
+            composer.addPass(renderScene);
+            composer.addPass(bloomPass);
+
+            createEnvironment();
+            loadPlayer(); 
+
+            // Input Listeners
+            window.addEventListener('keydown', (e) => {
+                const key = e.key.toLowerCase();
+                if(keys.hasOwnProperty(key)) keys[key] = true;
+                if(e.code === 'Space') keys.space = true;
+            });
+            window.addEventListener('keyup', (e) => {
+                const key = e.key.toLowerCase();
+                if(keys.hasOwnProperty(key)) keys[key] = false;
+                if(e.code === 'Space') keys.space = false;
+            });
+            window.addEventListener('resize', onResize);
+            
+            setInterval(spawnOrb, 2000);
+            setInterval(spawnObstacle, 3000);
+        }
+
+        // ... (createEnvironment keeps same)
+        function createEnvironment() {
+            const gridHelper = new THREE.GridHelper(200, 100, 0x00ffff, 0x111122);
+            gridHelper.position.y = -0.1;
+            scene.add(gridHelper);
+
+            const planeGeo = new THREE.PlaneGeometry(200, 200);
+            const planeMat = new THREE.MeshStandardMaterial({ 
+                color: 0x050510, 
+                roughness: 0.1, 
+                metalness: 0.5 
+            });
+            const plane = new THREE.Mesh(planeGeo, planeMat);
+            plane.rotation.x = -Math.PI / 2;
+            plane.receiveShadow = true;
+            scene.add(plane);
+        }
+
+        // --- 回归标准加载逻辑 (仿照 gallery.html) ---
+        function loadPlayer() {
+            const loadingText = document.getElementById('loading');
+            
+            // 1. 初始化 Player 容器
+            player = new THREE.Group();
+            scene.add(player);
+
+            // 2. 使用标准 GLTFLoader (无 Draco)
+            const loader = new GLTFLoader();
+
+            loadingText.innerText = "正在下载模型...";
+
+            loader.load('columbina_rigged_free.glb', (gltf) => {
+                console.log("模型加载成功");
+                playerModel = gltf.scene;
+                player.add(playerModel);
+
+                // 计算缩放
+                const box = new THREE.Box3().setFromObject(playerModel);
+                const size = box.getSize(new THREE.Vector3());
+                const center = box.getCenter(new THREE.Vector3());
+
+                let scale = 1.0;
+                if (size.y > 0.001) scale = 2.0 / size.y; 
+                playerModel.scale.setScalar(scale);
+                
+                // 居中
+                playerModel.position.x = -center.x * scale;
+                playerModel.position.y = -box.min.y * scale; 
+                playerModel.position.z = -center.z * scale;
+
+                // 材质与骨骼
+                playerModel.traverse(c => {
+                    if(c.isMesh) {
+                        c.castShadow = true;
+                        if(c.material) {
+                            c.material.side = THREE.DoubleSide; 
+                            c.material.emissive = new THREE.Color(0x222244); 
+                            c.material.emissiveIntensity = 0.3;
+                        }
+                    }
+                    if(c.isBone) {
+                        const n = c.name.toLowerCase();
+                        if(n.includes('spine') || n.includes('body')) bones.spine = c;
+                        if(n.includes('head')) bones.head = c;
+                    }
+                });
+                
+                // 成功后隐藏 Loading
+                loadingText.style.display = 'none';
+
+            }, (xhr) => {
+                const percent = (xhr.loaded / xhr.total * 100).toFixed(0);
+                loadingText.innerText = `加载中... ${percent}%`;
+            }, (error) => {
+                console.error("加载失败，启用备用模型", error);
+                loadingText.innerHTML = `加载失败: ${error.message}<br>启用备用模型...`;
+                loadingText.style.color = "orange";
+                setTimeout(() => { loadingText.style.display = 'none'; }, 3000);
+                createFallbackPlayer();
+            });
+        }
+
+        function createFallbackPlayer() {
+            // 如果 GLB 加载失败，创建一个发光的胶囊体代替
+            if(playerModel) return; // 已经有模型了
+
+            console.log("Creating Fallback Player");
+            const geo = new THREE.CapsuleGeometry(0.5, 1, 4, 8);
+            const mat = new THREE.MeshStandardMaterial({
+                color: 0x00ffff,
+                emissive: 0x0088ff,
+                emissiveIntensity: 0.5,
+                wireframe: true
+            });
+            playerModel = new THREE.Mesh(geo, mat);
+            playerModel.position.y = 1; // 抬高一点
+            playerModel.castShadow = true;
+            
+            player.add(playerModel);
+        }
+
+
+        function spawnOrb() {
+            const geo = new THREE.IcosahedronGeometry(0.5, 0);
+            const mat = new THREE.MeshBasicMaterial({ color: 0x00ffff });
+            const orb = new THREE.Mesh(geo, mat);
+            
+            // 随机位置 (在视野外生成，或者在地图范围内随机)
+            const x = (Math.random() - 0.5) * CONFIG.bounds * 1.8;
+            const z = (Math.random() - 0.5) * CONFIG.bounds * 1.8;
+            orb.position.set(x, 1, z);
+            
+            // 动画数据
+            orb.userData = { 
+                floatOffset: Math.random() * 10,
+                type: 'orb'
+            };
+            
+            scene.add(orb);
+            orbs.push(orb);
+            
+            // 添加点光
+            const light = new THREE.PointLight(0x00ffff, 2, 5);
+            orb.add(light);
+        }
+
+        function spawnObstacle() {
+            // 红色晶体尖刺
+            const geo = new THREE.ConeGeometry(0.8, 4, 4);
+            const mat = new THREE.MeshStandardMaterial({ 
+                color: 0xff0000, 
+                emissive: 0x550000,
+                roughness: 0.2
+            });
+            const obs = new THREE.Mesh(geo, mat);
+            
+            const x = (Math.random() - 0.5) * CONFIG.bounds * 1.8;
+            const z = (Math.random() - 0.5) * CONFIG.bounds * 1.8;
+            obs.position.set(x, 0, z); // 从地下冒出来
+            
+            // 冒出动画
+            new TWEEN.Tween(obs.position).to({ y: 2 }, 500).easing(TWEEN.Easing.Back.Out).start();
+            
+            obs.castShadow = true;
+            obs.userData = { type: 'obstacle' };
+            
+            scene.add(obs);
+            obstacles.push(obs);
+            
+            // 15秒后自动消失，防止卡顿
+            setTimeout(() => {
+                if(obs.parent) {
+                    new TWEEN.Tween(obs.scale).to({x:0, y:0, z:0}, 500).onComplete(() => scene.remove(obs)).start();
+                    const idx = obstacles.indexOf(obs);
+                    if(idx > -1) obstacles.splice(idx, 1);
+                }
+            }, 15000);
+        }
+
+        // --- 核心逻辑 ---
+
+        function updatePlayer(delta, time) {
+            if(!player) return;
+
+            // 1. 计算输入向量
+            const inputVec = new THREE.Vector3(0, 0, 0);
+            if(keys.w) inputVec.z -= 1;
+            if(keys.s) inputVec.z += 1;
+            if(keys.a) inputVec.x -= 1;
+            if(keys.d) inputVec.x += 1;
+            inputVec.normalize();
+
+            // 2. 加速与移动
+            const targetSpeed = keys.space ? CONFIG.dashSpeed : CONFIG.speed;
+            
+            if (inputVec.length() > 0) {
+                // 加速
+                playerVelocity.x += inputVec.x * CONFIG.acceleration;
+                playerVelocity.z += inputVec.z * CONFIG.acceleration;
+                
+                // 转向 (平滑插值到目标方向)
+                const targetRotation = Math.atan2(playerVelocity.x, playerVelocity.z); // + Math.PI if backward
+                // 最短路径旋转
+                let rotDiff = targetRotation - player.rotation.y;
+                while(rotDiff > Math.PI) rotDiff -= Math.PI*2;
+                while(rotDiff < -Math.PI) rotDiff += Math.PI*2;
+                player.rotation.y += rotDiff * CONFIG.turnSpeed * delta;
+            }
+
+            // 摩擦力
+            playerVelocity.multiplyScalar(CONFIG.friction);
+            
+            // 限制最大速度
+            playerVelocity.clampLength(0, targetSpeed);
+
+            // 应用位移
+            player.position.add(playerVelocity.clone().multiplyScalar(delta));
+
+            // 边界限制
+            player.position.x = THREE.MathUtils.clamp(player.position.x, -CONFIG.bounds, CONFIG.bounds);
+            player.position.z = THREE.MathUtils.clamp(player.position.z, -CONFIG.bounds, CONFIG.bounds);
+
+            // 3. 程序化姿态动画 (Procedural Pose)
+            const speedRatio = playerVelocity.length() / CONFIG.speed;
+            
+            // 漂浮律动 (Idle Float)
+            const floatY = Math.sin(time * 3) * 0.2 + 0.5; // 基础高度0.5
+            playerModel.position.y = floatY;
+
+            // 身体前倾 (Leaning Forward) - 速度越快倾斜越大
+            const leanAngle = speedRatio * 0.5; // 最大前倾 0.5 弧度
+            playerModel.rotation.x = leanAngle;
+
+            // 侧身压弯 (Banking) - 转向时身体侧倾
+            // 简单的侧倾可以通过横向速度比例来算
+            // 如果你在向左转，身体向左倾
+            // 我们用 inputVec.x 来近似意图，或者用 velocity 的切向分量
+            // 简单点：根据按键 A/D
+            let bankAngle = 0;
+            if (keys.a) bankAngle = 0.3;
+            if (keys.d) bankAngle = -0.3;
+            
+            // 平滑应用侧倾
+            const currentBank = playerModel.rotation.z;
+            playerModel.rotation.z += (bankAngle - currentBank) * 5 * delta;
+
+            // 脊柱动态修正 (让头稍微抬起来，保持水平视线，不要看地板)
+            if (bones.spine) {
+                // 抵消一部分身体的前倾，让上半身稍微挺直一点
+                bones.spine.rotation.x = -leanAngle * 0.5;
+            }
+            if (bones.head) {
+                // 头完全抵消前倾，保持看前方
+                bones.head.rotation.x = -leanAngle * 0.5; 
+                // 甚至稍微抬起一点
+                bones.head.rotation.x -= 0.2; 
+            }
+
+            // 4. 相机跟随
+            // 目标相机位置：玩家背后上方
+            const offset = new THREE.Vector3(0, 6, 10);
+            // 旋转 offset 以匹配玩家方向? 不，通常 RPG 是一直在背后的
+            // 这里我们做简单的固定角度跟随，或者稍微带点延迟
+            const targetCamPos = player.position.clone().add(offset);
+            
+            // 简单的平滑跟随 (Lerp)
+            camera.position.lerp(targetCamPos, 5 * delta);
+            camera.lookAt(player.position);
+        }
+
+        function checkCollisions() {
+            if(!player) return;
+            const pBox = new THREE.Box3().setFromObject(player);
+            // 稍微缩小判定框，手感更好
+            pBox.expandByScalar(-0.5);
+
+            // 1. 检查收集物
+            for (let i = orbs.length - 1; i >= 0; i--) {
+                const orb = orbs[i];
+                const oBox = new THREE.Box3().setFromObject(orb);
+                
+                if (pBox.intersectsBox(oBox)) {
+                    // 吃到球了
+                    score += 10;
+                    document.getElementById('score').innerText = score;
+                    
+                    // 特效
+                    createExplosion(orb.position, 0x00ffff);
+                    
+                    // 移除
+                    scene.remove(orb);
+                    orbs.splice(i, 1);
+                }
+            }
+
+            // 2. 检查障碍物
+            for (let i = obstacles.length - 1; i >= 0; i--) {
+                const obs = obstacles[i];
+                const oBox = new THREE.Box3().setFromObject(obs);
+                oBox.expandByScalar(-0.2); // 尖刺判定稍微小一点
+
+                if (pBox.intersectsBox(oBox)) {
+                    // 撞到了
+                    takeDamage();
+                    
+                    // 简单的弹开效果
+                    const pushDir = player.position.clone().sub(obs.position).normalize();
+                    playerVelocity.add(pushDir.multiplyScalar(20)); // 强力反弹
+                    
+                    // 移除障碍防止连续扣血
+                    scene.remove(obs);
+                    obstacles.splice(i, 1);
+                }
+            }
+        }
+
+        function takeDamage() {
+            const overlay = document.getElementById('damage-overlay');
+            overlay.style.opacity = 0.8;
+            setTimeout(() => overlay.style.opacity = 0, 300);
+            
+            // 屏幕震动
+            camera.position.x += (Math.random()-0.5);
+            camera.position.y += (Math.random()-0.5);
+        }
+
+        function createExplosion(pos, color) {
+            // 简单的粒子爆炸 (这里简化，直接闪一下光)
+            const light = new THREE.PointLight(color, 5, 10);
+            light.position.copy(pos);
+            scene.add(light);
+            
+            // 快速消失
+            new TWEEN.Tween(light).to({intensity: 0}, 500).onComplete(() => scene.remove(light)).start();
+        }
+
+        function onResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            composer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            const delta = clock.getDelta();
+            const time = clock.getElapsedTime();
+
+            updatePlayer(delta, time);
+            checkCollisions();
+            TWEEN.update();
+
+            // 物品自旋动画
+            orbs.forEach(orb => {
+                orb.rotation.y += delta * 2;
+                orb.position.y = 1 + Math.sin(time * 2 + orb.userData.floatOffset) * 0.3;
+            });
+
+            composer.render();
+        }
+    </script>
+</body>
+</html>

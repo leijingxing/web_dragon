@@ -150,6 +150,10 @@
 
         let scene, camera, renderer, controls, mixer;
         let currentModel = null;
+        // 程序化动画对象
+        let proceduralBones = { head: null, spine: null, neck: null };
+        let isProceduralActive = false;
+        
         const clock = new THREE.Clock();
 
         init();
@@ -218,6 +222,9 @@
                 if(mixer) mixer.stopAllAction();
                 mixer = null;
                 currentModel = null;
+                // 重置程序化动画状态
+                proceduralBones = { head: null, spine: null, neck: null };
+                isProceduralActive = false;
             }
 
             const loader = new GLTFLoader();
@@ -238,17 +245,30 @@
                 currentModel.position.x = -center.x * scale;
                 currentModel.position.y = -box.min.y * scale; // 让脚底贴地
                 currentModel.position.z = -center.z * scale;
+                
+                // 保存初始 Y 供漂浮动画使用
+                currentModel.userData.baseY = currentModel.position.y;
 
                 scene.add(currentModel);
 
-                // Animation
+                // Animation Strategy
                 if (gltf.animations && gltf.animations.length > 0) {
+                    // 1. 优先使用自带动画
                     mixer = new THREE.AnimationMixer(currentModel);
                     const action = mixer.clipAction(gltf.animations[0]);
                     action.play();
+                    loaderDiv.innerText = "加载完成 (自带动画)";
+                } else {
+                    // 2. 如果没有动画，尝试程序化驱动骨骼
+                    setupProceduralAnimation(currentModel);
+                    if (isProceduralActive) {
+                        loaderDiv.innerText = "加载完成 (智能驱动已激活)";
+                    } else {
+                        loaderDiv.innerText = "加载完成 (静态模型)";
+                    }
                 }
 
-                loaderDiv.style.display = 'none';
+                setTimeout(() => { loaderDiv.style.display = 'none'; }, 2000);
 
             }, (xhr) => {
                 const percent = (xhr.loaded / xhr.total * 100).toFixed(0);
@@ -257,6 +277,52 @@
                 console.error(error);
                 loaderDiv.innerText = "加载失败: " + path;
             });
+        }
+
+        // --- 智能骨骼绑定 ---
+        function setupProceduralAnimation(model) {
+            model.traverse((obj) => {
+                if (obj.isBone) {
+                    const name = obj.name.toLowerCase();
+                    // 模糊匹配常见骨骼名称
+                    if (name.includes('head') || name.includes('tou')) proceduralBones.head = obj;
+                    else if (name.includes('neck') || name.includes('bozi')) proceduralBones.neck = obj;
+                    else if ((name.includes('spine') || name.includes('body')) && !name.includes('2')) proceduralBones.spine = obj;
+                }
+            });
+
+            // 只要找到任意一个关键骨骼，就激活程序化动画
+            if (proceduralBones.head || proceduralBones.spine) {
+                isProceduralActive = true;
+                console.log("Procedural Animation Activated for:", proceduralBones);
+            }
+        }
+
+        // --- 实时驱动 ---
+        function updateProceduralAnimation(time) {
+            if (!currentModel) return;
+
+            // 1. 整体呼吸式悬浮 (Floating)
+            // 让模型轻微上下浮动，模拟呼吸时的重心变化
+            currentModel.position.y = currentModel.userData.baseY + Math.sin(time) * 0.05;
+
+            // 2. 脊柱呼吸 (Spine Breath)
+            if (proceduralBones.spine) {
+                // 绕 X 轴微弱旋转 (前后呼吸)
+                proceduralBones.spine.rotation.x = Math.sin(time * 2) * 0.03;
+                // 绕 Y 轴微弱旋转 (身体自然摆动)
+                proceduralBones.spine.rotation.y = Math.sin(time * 1) * 0.03;
+            }
+
+            // 3. 头部注视 (Head Look)
+            // 让头部做非常缓慢的“环顾四周”运动
+            if (proceduralBones.head) {
+                proceduralBones.head.rotation.y = Math.sin(time * 0.5) * 0.3; // 左右看
+                proceduralBones.head.rotation.x = Math.sin(time * 0.3) * 0.05; // 上下微动
+            } else if (proceduralBones.neck) {
+                // 如果没找到头，动脖子
+                proceduralBones.neck.rotation.y = Math.sin(time * 0.5) * 0.2;
+            }
         }
 
         function onResize() {
@@ -268,7 +334,15 @@
         function animate() {
             requestAnimationFrame(animate);
             const delta = clock.getDelta();
-            if (mixer) mixer.update(delta);
+            const time = clock.getElapsedTime();
+
+            if (mixer) {
+                mixer.update(delta);
+            } else if (isProceduralActive) {
+                // 如果没有 Mixer，执行程序化动画
+                updateProceduralAnimation(time);
+            }
+
             controls.update();
             renderer.render(scene, camera);
         }

@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <title>Columbina 的试炼</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #222; font-family: 'Microsoft YaHei', sans-serif; user-select: none; }
+        
+        /* UI 容器 */
+        #ui-layer {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            pointer-events: none; /* 让鼠标事件穿透到 3D 画布 */
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+        }
+
+        /* 顶部 HUD */
+        .hud {
+            padding: 20px;
+            display: flex;
+            justify-content: space-between;
+            color: white;
+            font-size: 24px;
+            font-weight: bold;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.8);
+        }
+        .hp-bar { color: #ff4d4d; }
+        .score-box { color: #ffd700; }
+
+        /* 游戏结束/开始 弹窗 */
+        #menu-screen {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0, 0, 0, 0.7);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            pointer-events: auto;
+            backdrop-filter: blur(5px);
+            transition: opacity 0.3s;
+            z-index: 10;
+        }
+        
+        h1 { color: white; font-size: 48px; margin-bottom: 10px; text-transform: uppercase; letter-spacing: 5px; }
+        p { color: #ccc; font-size: 18px; margin-bottom: 30px; }
+        
+        button {
+            padding: 15px 40px;
+            font-size: 24px;
+            background: linear-gradient(45deg, #6a11cb, #2575fc);
+            color: white;
+            border: none;
+            border-radius: 50px;
+            cursor: pointer;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.3);
+            transition: transform 0.1s;
+        }
+        button:hover { transform: scale(1.05); }
+        button:active { transform: scale(0.95); }
+
+        /* 加载提示 */
+        #loader { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); color: white; font-size: 20px; }
+    </style>
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+</head>
+<body>
+
+    <div id="ui-layer">
+        <div class="hud">
+            <div class="hp-bar">生命值: <span id="hp-val">❤❤❤❤❤</span></div>
+            <div class="score-box">得分: <span id="score-val">0</span></div>
+        </div>
+    </div>
+
+    <div id="menu-screen">
+        <h1 id="menu-title">准备就绪</h1>
+        <p id="menu-desc">使用 ⬅️ ➡️ 箭头键或 A/D 移动<br>躲避红块，收集金球</p>
+        <button id="start-btn" disabled>正在加载模型...</button>
+    </div>
+    
+    <script type="module">
+        import * as THREE from 'three';
+        import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+        // --- 游戏配置 ---
+        const CONFIG = {
+            playerSpeed: 0.15,
+            laneWidth: 8, // 左右移动范围
+            spawnRate: 60, // 多少帧生成一个物体
+            gravity: 0.08, // 下落速度
+            modelPath: './genshin_impact_furina.glb' // 你的模型文件名
+        };
+
+        // --- 全局变量 ---
+        let scene, camera, renderer;
+        let playerGroup, playerMesh;
+        let fallingObjects = [];
+        let isGameRunning = false;
+        let score = 0;
+        let hp = 5;
+        let frameCount = 0;
+        let mixer; // 动画混合器 (如果有自带动画)
+        let clock = new THREE.Clock();
+
+        // 按键状态
+        const keys = { ArrowLeft: false, ArrowRight: false, KeyA: false, KeyD: false };
+
+        // DOM 元素
+        const scoreEl = document.getElementById('score-val');
+        const hpEl = document.getElementById('hp-val');
+        const menuScreen = document.getElementById('menu-screen');
+        const startBtn = document.getElementById('start-btn');
+        const menuTitle = document.getElementById('menu-title');
+
+        init();
+        animate();
+
+        function init() {
+            // 1. 场景
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x201b2e); // 深紫色背景
+            scene.fog = new THREE.Fog(0x201b2e, 10, 40);
+
+            // 2. 相机
+            camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 100);
+            camera.position.set(0, 5, 12); // 相机位置
+            camera.lookAt(0, 2, 0);
+
+            // 3. 渲染器
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.shadowMap.enabled = true;
+            document.body.appendChild(renderer.domElement);
+
+            // 4. 灯光
+            const hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444, 1.5);
+            scene.add(hemiLight);
+
+            const dirLight = new THREE.DirectionalLight(0xffaaee, 2); // 带点粉色的光
+            dirLight.position.set(5, 10, 7);
+            dirLight.castShadow = true;
+            scene.add(dirLight);
+
+            // 5. 地板 (网格)
+            const gridHelper = new THREE.GridHelper(50, 50, 0x4a4a4a, 0x2a2a2a);
+            scene.add(gridHelper);
+            
+            // 无尽地板效果
+            const planeGeo = new THREE.PlaneGeometry(100, 100);
+            const planeMat = new THREE.MeshPhongMaterial({ color: 0x1a1a1a, depthWrite: false });
+            const ground = new THREE.Mesh(planeGeo, planeMat);
+            ground.rotation.x = -Math.PI / 2;
+            ground.receiveShadow = true;
+            ground.position.y = -0.1;
+            scene.add(ground);
+
+            // 6. 加载主角模型
+            loadPlayerModel();
+
+            // 7. 事件监听
+            window.addEventListener('resize', onWindowResize);
+            window.addEventListener('keydown', (e) => keys[e.code] = true);
+            window.addEventListener('keyup', (e) => keys[e.code] = false);
+            startBtn.addEventListener('click', startGame);
+        }
+
+        function loadPlayerModel() {
+            const loader = new GLTFLoader();
+            loader.load(CONFIG.modelPath, (gltf) => {
+                const model = gltf.scene;
+                
+                // --- 自动缩放逻辑 ---
+                // 计算模型的原始大小，把它缩放到合适的高度 (例如 2米高)
+                const box = new THREE.Box3().setFromObject(model);
+                const size = box.getSize(new THREE.Vector3());
+                const scaleFactor = 2.0 / size.y; 
+                model.scale.set(scaleFactor, scaleFactor, scaleFactor);
+
+                // 开启阴影
+                model.traverse(o => { if (o.isMesh) o.castShadow = true; });
+
+                // 创建一个组来控制玩家，方便移动
+                playerGroup = new THREE.Group();
+                playerGroup.add(model);
+                scene.add(playerGroup);
+                
+                playerMesh = model; // 保存引用用于动画
+
+                // 尝试加载自带动画 (如果有)
+                if (gltf.animations.length > 0) {
+                    mixer = new THREE.AnimationMixer(model);
+                    mixer.clipAction(gltf.animations[0]).play();
+                }
+
+                // UI 更新
+                startBtn.textContent = "开始游戏";
+                startBtn.disabled = false;
+                startBtn.style.background = "linear-gradient(45deg, #11998e, #38ef7d)";
+
+            }, undefined, (err) => {
+                console.error(err);
+                startBtn.textContent = "模型加载失败";
+                menuTitle.innerText = "错误";
+                document.getElementById('menu-desc').innerText = "找不到 " + CONFIG.modelPath + " 文件\n请确保文件名正确且在同一目录";
+            });
+        }
+
+        function startGame() {
+            if (!playerGroup) return;
+            
+            // 重置状态
+            score = 0;
+            hp = 5;
+            fallingObjects.forEach(obj => scene.remove(obj.mesh));
+            fallingObjects = [];
+            playerGroup.position.set(0, 0, 0);
+            updateUI();
+            
+            isGameRunning = true;
+            menuScreen.style.opacity = '0';
+            setTimeout(() => menuScreen.style.display = 'none', 300);
+        }
+
+        function gameOver() {
+            isGameRunning = false;
+            menuScreen.style.display = 'flex';
+            setTimeout(() => menuScreen.style.opacity = '1', 10); // 淡入
+            menuTitle.innerText = "游戏结束";
+            document.getElementById('menu-desc').innerHTML = `最终得分: <span style="color:gold; font-size:24px">${score}</span>`;
+            startBtn.textContent = "再来一次";
+        }
+
+        function spawnObject() {
+            // 随机决定是 奖励(金球) 还是 障碍(红块)
+            // 20% 概率是奖励，80% 是障碍
+            const isGood = Math.random() > 0.7; 
+            
+            const geometry = isGood ? new THREE.SphereGeometry(0.4, 16, 16) : new THREE.BoxGeometry(0.6, 0.6, 0.6);
+            const material = new THREE.MeshPhongMaterial({ 
+                color: isGood ? 0xffd700 : 0xff3333,
+                emissive: isGood ? 0xaa6600 : 0x440000,
+                emissiveIntensity: 0.5
+            });
+
+            const mesh = new THREE.Mesh(geometry, material);
+            
+            // 随机 X 位置 (-laneWidth/2 到 laneWidth/2)
+            const xPos = (Math.random() - 0.5) * CONFIG.laneWidth;
+            mesh.position.set(xPos, 10, 0); // 从高处落下
+            mesh.castShadow = true;
+
+            // 给物体添加旋转动画的随机速度
+            mesh.userData = {
+                type: isGood ? 'good' : 'bad',
+                rotSpeed: { x: Math.random() * 0.1, y: Math.random() * 0.1 }
+            };
+
+            scene.add(mesh);
+            fallingObjects.push({ mesh: mesh });
+        }
+
+        function updatePhysics() {
+            // 1. 玩家移动
+            let moveDir = 0;
+            if (keys.ArrowLeft || keys.KeyA) moveDir = -1;
+            if (keys.ArrowRight || keys.KeyD) moveDir = 1;
+
+            if (playerGroup) {
+                // 移动位置
+                playerGroup.position.x += moveDir * CONFIG.playerSpeed;
+                
+                // 限制在屏幕内
+                playerGroup.position.x = Math.max(Math.min(playerGroup.position.x, CONFIG.laneWidth/2), -CONFIG.laneWidth/2);
+
+                // --- 程序化动画效果 ---
+                // 左右倾斜 (Banking)
+                playerGroup.rotation.z = THREE.MathUtils.lerp(playerGroup.rotation.z, -moveDir * 0.2, 0.1);
+                
+                // 呼吸效果 (上下浮动)
+                const time = Date.now() * 0.002;
+                playerGroup.position.y = Math.sin(time) * 0.05; 
+                
+                // 如果在移动，稍微前倾
+                playerGroup.rotation.x = THREE.MathUtils.lerp(playerGroup.rotation.x, moveDir !== 0 ? 0.1 : 0, 0.1);
+            }
+
+            // 2. 障碍物逻辑
+            for (let i = fallingObjects.length - 1; i >= 0; i--) {
+                const obj = fallingObjects[i];
+                const mesh = obj.mesh;
+
+                // 下落
+                mesh.position.y -= CONFIG.gravity;
+                
+                // 自转
+                mesh.rotation.x += mesh.userData.rotSpeed.x;
+                mesh.rotation.y += mesh.userData.rotSpeed.y;
+
+                // 碰撞检测 (简单的距离检测)
+                // 假设玩家高度中心在 y=1
+                const dist = mesh.position.distanceTo(new THREE.Vector3(playerGroup.position.x, 1, 0));
+
+                if (dist < 1.0) { // 撞到了
+                    if (mesh.userData.type === 'good') {
+                        score += 10;
+                        // 可以添加特效，这里简单处理
+                    } else {
+                        hp -= 1;
+                        // 受伤特效：玩家变红一瞬间
+                        if(playerMesh) {
+                            playerMesh.traverse(o => {
+                                if(o.isMesh && o.material) {
+                                    o.material.emissive = new THREE.Color(0xff0000);
+                                    setTimeout(() => { o.material.emissive = new THREE.Color(0x000000); }, 100);
+                                }
+                            });
+                        }
+                    }
+                    
+                    // 移除物体
+                    scene.remove(mesh);
+                    fallingObjects.splice(i, 1);
+                    updateUI();
+                    
+                    if (hp <= 0) gameOver();
+                    continue;
+                }
+
+                // 超出屏幕移除
+                if (mesh.position.y < -2) {
+                    scene.remove(mesh);
+                    fallingObjects.splice(i, 1);
+                }
+            }
+        }
+
+        function updateUI() {
+            scoreEl.innerText = score;
+            let heartStr = "";
+            for(let i=0; i<hp; i++) heartStr += "❤";
+            hpEl.innerText = heartStr;
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+
+            const delta = clock.getDelta();
+            if (mixer) mixer.update(delta);
+
+            if (isGameRunning) {
+                frameCount++;
+                if (frameCount % CONFIG.spawnRate === 0) {
+                    spawnObject();
+                    // 随着分数增加，难度增加 (生成速度加快)
+                    if (score > 50) CONFIG.spawnRate = 50;
+                    if (score > 100) CONFIG.spawnRate = 40;
+                    if (score > 200) CONFIG.spawnRate = 30;
+                }
+                updatePhysics();
+            }
+
+            renderer.render(scene, camera);
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+    </script>
+</body>
+</html>
