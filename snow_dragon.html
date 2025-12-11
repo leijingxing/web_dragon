@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>极寒雪龙 - FROST WYRM</title>
+    <style>
+        body { 
+            margin: 0; 
+            overflow: hidden; 
+            background-color: #000205; 
+            font-family: 'Segoe UI', 'Roboto', sans-serif;
+            user-select: none;
+        }
+
+        /* --- UI 界面设计 (HUD 风格) --- */
+        #ui-container {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none; /* 鼠标穿透 */
+            z-index: 10;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            padding: 40px;
+            box-sizing: border-box;
+            background: radial-gradient(circle at center, transparent 50%, rgba(0, 10, 30, 0.6) 100%); /* 四周暗角 */
+        }
+
+        /* 顶部标题栏 */
+        .header {
+            display: flex;
+            align-items: flex-start;
+            flex-direction: column;
+            animation: slideDown 1s ease-out;
+        }
+        
+        h1 {
+            margin: 0;
+            font-size: 3.5rem;
+            font-weight: 800;
+            color: #fff;
+            text-transform: uppercase;
+            letter-spacing: 10px;
+            text-shadow: 0 0 20px rgba(0, 234, 255, 0.8), 0 0 40px rgba(0, 234, 255, 0.4);
+            font-style: italic;
+            background: linear-gradient(to bottom, #ffffff, #00eaff);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .subtitle {
+            font-size: 1rem;
+            color: #00eaff;
+            letter-spacing: 4px;
+            margin-top: 5px;
+            border-left: 3px solid #00eaff;
+            padding-left: 15px;
+            opacity: 0.8;
+        }
+
+        /* 底部状态栏 */
+        .footer {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-end;
+            color: rgba(255, 255, 255, 0.5);
+            font-size: 0.8rem;
+            letter-spacing: 2px;
+            animation: slideUp 1s ease-out;
+        }
+
+        .status-box {
+            border: 1px solid rgba(0, 234, 255, 0.3);
+            padding: 10px 20px;
+            background: rgba(0, 20, 40, 0.5);
+            backdrop-filter: blur(5px);
+        }
+
+        /* 加载动画 */
+        #loader {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: #000205;
+            z-index: 100;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            transition: opacity 0.8s ease-in-out;
+        }
+
+        .loader-ring {
+            width: 80px;
+            height: 80px;
+            border: 4px solid rgba(0, 234, 255, 0.1);
+            border-top: 4px solid #00eaff;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            box-shadow: 0 0 20px rgba(0, 234, 255, 0.2);
+        }
+
+        .loader-text {
+            margin-top: 20px;
+            color: #00eaff;
+            letter-spacing: 3px;
+            font-size: 0.9rem;
+            animation: pulse 1.5s infinite;
+        }
+
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        @keyframes pulse { 0%, 100% { opacity: 0.5; } 50% { opacity: 1; } }
+        @keyframes slideDown { from { transform: translateY(-50px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+        @keyframes slideUp { from { transform: translateY(50px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+
+    </style>
+    <!-- Import Map for Three.js -->
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+</head>
+<body>
+
+    <div id="loader">
+        <div class="loader-ring"></div>
+        <div class="loader-text" id="loader-text">INITIALIZING SYSTEMS...</div>
+    </div>
+
+    <div id="ui-container">
+        <div class="header">
+            <h1>FROST WYRM</h1>
+            <div class="subtitle">PROJECT: SNOW_DRAGON // VISUALIZATION</div>
+        </div>
+        <div class="footer">
+            <div class="status-box">SYSTEM: ONLINE</div>
+            <div class="status-box" id="coords">CAM: 0.00, 0.00, 0.00</div>
+        </div>
+    </div>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+        
+        // 后期处理
+        import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+        import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+        import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+        import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+
+        let scene, camera, renderer, controls, mixer;
+        let composer;
+        let snowSystem, dragonModel;
+        const clock = new THREE.Clock();
+        
+        // 鼠标交互
+        const mouse = new THREE.Vector2();
+        const targetRotation = new THREE.Vector2();
+
+        init();
+        animate();
+
+        function init() {
+            // 1. 场景设置
+            scene = new THREE.Scene();
+            // 使用渐变背景而不是纯色，模拟深空
+            scene.background = new THREE.Color(0x02040a); 
+            scene.fog = new THREE.FogExp2(0x02040a, 0.015);
+
+            // 2. 渲染器
+            renderer = new THREE.WebGLRenderer({ antialias: false }); // 后期处理开启时通常关闭默认抗锯齿以提升性能
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2)); // 限制像素比以保证性能
+            renderer.toneMapping = THREE.ReinhardToneMapping;
+            document.body.appendChild(renderer.domElement);
+
+            // 3. 相机
+            camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 100);
+            camera.position.set(0, 2, 8);
+
+            // 4. 后期处理 (Bloom - 辉光)
+            const renderScene = new RenderPass(scene, camera);
+
+            // 参数: 分辨率, 强度, 半径, 阈值
+            const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 1.5, 0.4, 0.85);
+            bloomPass.threshold = 0; // 让所有东西都有点光晕
+            bloomPass.strength = 0.6; // 辉光强度
+            bloomPass.radius = 0.5; // 扩散半径
+
+            const outputPass = new OutputPass();
+
+            composer = new EffectComposer(renderer);
+            composer.addPass(renderScene);
+            composer.addPass(bloomPass);
+            composer.addPass(outputPass);
+
+            // 5. 灯光系统
+            const ambientLight = new THREE.AmbientLight(0x4040ff, 1.0); // 蓝色环境光
+            scene.add(ambientLight);
+
+            // 主光源 - 寒冷的青色
+            const mainLight = new THREE.DirectionalLight(0x00ffff, 4);
+            mainLight.position.set(5, 10, 7);
+            scene.add(mainLight);
+
+            // 边缘光 - 紫色，增加对比度
+            const rimLight = new THREE.SpotLight(0xaa00ff, 10);
+            rimLight.position.set(-5, 2, -5);
+            rimLight.lookAt(0, 0, 0);
+            scene.add(rimLight);
+
+            // 底部反射光 - 模拟雪地反光
+            const bottomLight = new THREE.PointLight(0xffffff, 2, 10);
+            bottomLight.position.set(0, -2, 2);
+            scene.add(bottomLight);
+
+            // 6. 星空背景
+            createStars();
+
+            // 7. 粒子系统 (暴风雪)
+            createSnow();
+
+            // 8. 加载模型
+            const loader = new GLTFLoader();
+            loader.load('snow_dragon.glb', (gltf) => {
+                dragonModel = gltf.scene;
+
+                // 自动调整模型大小和位置
+                const box = new THREE.Box3().setFromObject(dragonModel);
+                const size = box.getSize(new THREE.Vector3());
+                const center = box.getCenter(new THREE.Vector3());
+                const maxDim = Math.max(size.x, size.y, size.z);
+                const scale = 4.0 / maxDim; // 放大一点
+                dragonModel.scale.setScalar(scale);
+                dragonModel.position.sub(center.multiplyScalar(scale)); // 居中
+                dragonModel.position.y -= 0.5; // 稍微下沉一点
+
+                // 增加一点自发光材质效果 (遍历模型材质)
+                dragonModel.traverse((child) => {
+                    if (child.isMesh) {
+                        child.castShadow = true;
+                        child.receiveShadow = true;
+                        // 如果有材质，增加一点环境贴图反射或金属感
+                        if (child.material) {
+                            child.material.envMapIntensity = 1;
+                            child.material.metalness = 0.6;
+                            child.material.roughness = 0.4;
+                        }
+                    }
+                });
+
+                scene.add(dragonModel);
+
+                // 动画
+                if (gltf.animations && gltf.animations.length > 0) {
+                    mixer = new THREE.AnimationMixer(dragonModel);
+                    const action = mixer.clipAction(gltf.animations[0]);
+                    action.timeScale = 0.6; // 慢动作更显庞大
+                    action.play();
+                }
+
+                // 隐藏加载页
+                const loaderDiv = document.getElementById('loader');
+                loaderDiv.style.opacity = '0';
+                setTimeout(() => loaderDiv.style.display = 'none', 800);
+
+            }, (xhr) => {
+                const percent = (xhr.loaded / xhr.total * 100).toFixed(0);
+                document.getElementById('loader-text').innerText = `LOADING RESOURCE... ${percent}%`;
+            });
+
+            // 9. 控制器
+            controls = new OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.05;
+            controls.autoRotate = true;
+            controls.autoRotateSpeed = 0.5;
+            controls.maxPolarAngle = Math.PI / 1.5; // 限制不能钻到地底
+
+            window.addEventListener('resize', onWindowResize);
+            document.addEventListener('mousemove', onMouseMove);
+        }
+
+        function createStars() {
+            const geometry = new THREE.BufferGeometry();
+            const vertices = [];
+            for (let i = 0; i < 1000; i++) {
+                vertices.push(
+                    (Math.random() - 0.5) * 100,
+                    (Math.random() - 0.5) * 100,
+                    (Math.random() - 0.5) * 100
+                );
+            }
+            geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
+            const material = new THREE.PointsMaterial({ color: 0xffffff, size: 0.1, transparent: true, opacity: 0.8 });
+            const stars = new THREE.Points(geometry, material);
+            scene.add(stars);
+        }
+
+        function createSnow() {
+            // 两个粒子系统，增加层次感
+            const count = 1500;
+            const pos = [];
+            const speeds = [];
+            
+            for(let i=0; i<count; i++) {
+                pos.push((Math.random() - 0.5) * 30); // x
+                pos.push((Math.random() - 0.5) * 30); // y
+                pos.push((Math.random() - 0.5) * 30); // z
+                speeds.push(0.02 + Math.random() * 0.05);
+            }
+
+            const geometry = new THREE.BufferGeometry();
+            geometry.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+            
+            // 使用自定义材质或者简单的点材质
+            const material = new THREE.PointsMaterial({
+                color: 0xaaccff,
+                size: 0.08,
+                transparent: true,
+                opacity: 0.6,
+                blending: THREE.AdditiveBlending,
+                depthWrite: false
+            });
+
+            snowSystem = new THREE.Points(geometry, material);
+            snowSystem.userData = { speeds: speeds };
+            scene.add(snowSystem);
+        }
+
+        function onMouseMove(event) {
+            // 简单的视差计算
+            mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+            mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            composer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        function updateUI() {
+            // 更新坐标显示
+            if (camera) {
+                const x = camera.position.x.toFixed(2);
+                const y = camera.position.y.toFixed(2);
+                const z = camera.position.z.toFixed(2);
+                document.getElementById('coords').innerText = `CAM: ${x}, ${y}, ${z}`;
+            }
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+
+            const delta = clock.getDelta();
+
+            if (mixer) mixer.update(delta);
+            controls.update();
+
+            // 雪花动画
+            if (snowSystem) {
+                const positions = snowSystem.geometry.attributes.position.array;
+                const speeds = snowSystem.userData.speeds;
+                
+                // 结合鼠标位置产生微风效果
+                const windX = mouse.x * 0.02;
+                const windZ = mouse.y * 0.02;
+
+                for(let i=0; i < positions.length / 3; i++) {
+                    // Y轴下落
+                    positions[i*3 + 1] -= speeds[i];
+                    // X/Z轴随风飘动
+                    positions[i*3] += windX * speeds[i] * 10;
+                    positions[i*3 + 2] += windZ * speeds[i] * 10;
+
+                    // 循环重置
+                    if (positions[i*3 + 1] < -10) {
+                        positions[i*3 + 1] = 10;
+                        positions[i*3] = (Math.random() - 0.5) * 30; // 重置X
+                        positions[i*3 + 2] = (Math.random() - 0.5) * 30; // 重置Z
+                    }
+                }
+                snowSystem.geometry.attributes.position.needsUpdate = true;
+                snowSystem.rotation.y += 0.002;
+            }
+
+            // 使用 Composer 渲染，而不是 renderer.render
+            composer.render();
+            updateUI();
+        }
+    </script>
+</body>
+</html>

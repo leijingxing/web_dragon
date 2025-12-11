@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>原神 - 「少女」哥伦比娅 | 最终修复版</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #050505; font-family: "Segoe UI", sans-serif; }
+        
+        /* UI 覆盖层 */
+        #ui-container {
+            position: absolute; top: 20px; left: 20px; color: #eee; pointer-events: none;
+            text-shadow: 0 0 5px rgba(0,0,0,0.8);
+        }
+        h1 { margin: 0; font-weight: 300; letter-spacing: 2px; color: #fff; }
+        p { margin: 5px 0; color: #aaa; font-size: 0.9rem; }
+        
+        /* 加载动画 */
+        #loader {
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            text-align: center; width: 100%;
+        }
+        .spinner {
+            width: 40px; height: 40px; border: 4px solid #333; border-top: 4px solid #fff;
+            border-radius: 50%; animation: spin 1s linear infinite; margin: 0 auto 15px;
+        }
+        #status { color: #fff; letter-spacing: 1px; }
+        #error-msg { color: #ff4444; margin-top: 10px; white-space: pre-wrap; }
+
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    </style>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/",
+                "lil-gui": "https://unpkg.com/lil-gui@0.19.1/dist/lil-gui.esm.min.js"
+            }
+        }
+    </script>
+</head>
+<body>
+
+    <div id="ui-container">
+        <h1>DAMSELETTE</h1>
+        <p>Genshin Impact • Fatui Harbingers</p>
+        <p style="font-size: 0.8rem; opacity: 0.6;">材质全白修复完成 • 交互式渲染</p>
+    </div>
+
+    <div id="loader">
+        <div class="spinner"></div>
+        <div id="status">正在初始化引擎...</div>
+        <div id="error-msg"></div>
+    </div>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+        import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
+        import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+        import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+        import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+        import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+
+        let scene, camera, renderer, controls, mixer, model, composer;
+        const clock = new THREE.Clock();
+        const statusDiv = document.getElementById('status');
+        const errorDiv = document.getElementById('error-msg');
+
+        init();
+
+        function init() {
+            // 1. 场景设置
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x050505);
+            // 加上一点紫色雾气，配合哥伦比娅的配色
+            scene.fog = new THREE.FogExp2(0x1a0b2e, 0.02);
+
+            // 2. 渲染器
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(window.devicePixelRatio);
+            // 电影级色调映射 (让颜色不那么生硬)
+            renderer.toneMapping = THREE.ACESFilmicToneMapping;
+            renderer.toneMappingExposure = 1.2;
+            renderer.shadowMap.enabled = true;
+            renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+            document.body.appendChild(renderer.domElement);
+
+            // 3. 相机
+            camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
+            camera.position.set(0, 1.4, 3.5);
+
+            // 4. 光照系统 (为了让材质显色，光照必须柔和)
+            const environment = new RoomEnvironment(renderer);
+            const pmremGenerator = new THREE.PMREMGenerator(renderer);
+            scene.environment = pmremGenerator.fromScene(environment).texture;
+
+            // 主光
+            const mainLight = new THREE.DirectionalLight(0xffffff, 2.0);
+            mainLight.position.set(2, 5, 5);
+            mainLight.castShadow = true;
+            scene.add(mainLight);
+
+            // 轮廓光 (紫色，增加神秘感)
+            const rimLight = new THREE.SpotLight(0xa020f0, 5);
+            rimLight.position.set(-3, 2, -3);
+            scene.add(rimLight);
+
+            // 5. 后期处理 (Bloom 辉光)
+            const renderScene = new RenderPass(scene, camera);
+            const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 1.5, 0.4, 0.85);
+            bloomPass.strength = 0.3; // 稍微发光即可，太强会白
+            bloomPass.radius = 0.5;
+            bloomPass.threshold = 0.8;
+
+            composer = new EffectComposer(renderer);
+            composer.addPass(renderScene);
+            composer.addPass(bloomPass);
+
+            // 6. 加载模型 (含修复逻辑)
+            loadModel();
+
+            // 7. 控制器
+            controls = new OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            controls.target.set(0, 0.8, 0);
+
+            window.addEventListener('resize', onWindowResize);
+            animate();
+        }
+
+        function loadModel() {
+            const loader = new GLTFLoader();
+            
+            // 设置 Draco 解码器 (解决压缩模型加载失败问题)
+            const dracoLoader = new DRACOLoader();
+            dracoLoader.setDecoderPath('https://unpkg.com/three@0.160.0/examples/jsm/libs/draco/gltf/');
+            loader.setDRACOLoader(dracoLoader);
+
+            statusDiv.innerText = "正在下载模型数据...";
+
+            loader.load(
+                'columbina_rigged_free.glb', // 确保文件名完全一致
+                (gltf) => {
+                    statusDiv.innerText = "正在处理材质...";
+                    model = gltf.scene;
+
+                    // === 🚨 终极修复全白问题的核心代码 🚨 ===
+                    model.traverse((child) => {
+                        if (child.isMesh && child.material) {
+                            child.castShadow = true;
+                            child.receiveShadow = true;
+
+                            // 1. 【关键】杀死自发光。原神模型常把这个设为白色，导致全白。
+                            // 只有当材质真的有 emissiveMap 时才保留一点点
+                            if (!child.material.emissiveMap) {
+                                child.material.emissive = new THREE.Color(0x000000); 
+                                child.material.emissiveIntensity = 0;
+                            } else {
+                                // 如果有发光贴图（神之眼），重置为白色但强度适中
+                                child.material.emissive = new THREE.Color(0xffffff);
+                                child.material.emissiveIntensity = 1.0;
+                            }
+
+                            // 2. 【关键】消除金属感。二次元角色不是铁做的。
+                            child.material.metalness = 0.0;
+
+                            // 3. 【关键】增加粗糙度。防止像镜子一样反光。
+                            child.material.roughness = 0.9; 
+
+                            // 4. 确保贴图色彩正确
+                            if (child.material.map) {
+                                child.material.map.colorSpace = THREE.SRGBColorSpace;
+                            }
+                            
+                            // 5. 双面渲染（防止裙子内侧透明）
+                            child.material.side = THREE.DoubleSide;
+                        }
+                    });
+                    // === 修复结束 ===
+
+                    // 自动缩放与居中
+                    const box = new THREE.Box3().setFromObject(model);
+                    const size = box.getSize(new THREE.Vector3());
+                    const maxDim = Math.max(size.x, size.y, size.z);
+                    if (maxDim > 0) {
+                        const scale = 2.5 / maxDim; 
+                        model.scale.setScalar(scale);
+                        const newBox = new THREE.Box3().setFromObject(model);
+                        const center = newBox.getCenter(new THREE.Vector3());
+                        model.position.sub(center);
+                        model.position.y += 0.8; // 调整高度
+                    }
+
+                    scene.add(model);
+
+                    // 播放动画
+                    if (gltf.animations && gltf.animations.length > 0) {
+                        mixer = new THREE.AnimationMixer(model);
+                        // 播放所有动画轨道
+                        gltf.animations.forEach(clip => {
+                            mixer.clipAction(clip).play();
+                        });
+                    }
+
+                    document.getElementById('loader').style.display = 'none';
+                },
+                (xhr) => {
+                    const percent = (xhr.loaded / xhr.total * 100).toFixed(0);
+                    statusDiv.innerText = `加载中... ${percent}%`;
+                },
+                (error) => {
+                    console.error(error);
+                    statusDiv.innerText = "❌ 加载失败";
+                    errorDiv.innerText = "1. 请确保文件名完全一致: columbina_rigged_free.glb\n2. 请按 F12 查看控制台详细错误\n3. 请务必使用 Live Server 运行";
+                }
+            );
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            composer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+
+        function animate() {
+            requestAnimationFrame(animate);
+            const delta = clock.getDelta();
+            if (mixer) mixer.update(delta);
+            controls.update();
+            // 自动缓慢旋转
+            if(model) model.rotation.y += 0.002;
+            composer.render();
+        }
+    </script>
+</body>
+</html>

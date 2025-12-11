@@ -1,0 +1,580 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Phoenix Realms - 穿越三界</title>
+    <link href="https://fonts.googleapis.com/css2?family=Ma+Shan+Zheng&family=Noto+Serif+SC:wght@400;700&display=swap" rel="stylesheet">
+    
+    <style>
+        body { 
+            margin: 0; 
+            overflow: hidden; 
+            background-color: #000;
+            font-family: 'Noto Serif SC', serif;
+            user-select: none;
+        }
+        
+        /* 电影级 UI 覆盖层 */
+        #ui-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            box-shadow: inset 0 0 100px rgba(0,0,0,0.8);
+            z-index: 10;
+        }
+
+        #title-box {
+            position: absolute;
+            top: 40px;
+            left: 50%;
+            transform: translateX(-50%);
+            text-align: center;
+            color: #fff;
+            text-shadow: 0 0 20px rgba(255, 200, 100, 0.5);
+        }
+
+        h1 {
+            font-family: 'Ma Shan Zheng', cursive; /* 书法字体 */
+            font-size: 3.5rem;
+            margin: 0;
+            background: linear-gradient(to bottom, #fff, #ffd700);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        p.subtitle {
+            font-size: 1rem;
+            letter-spacing: 5px;
+            color: rgba(255,255,255,0.7);
+            margin-top: 5px;
+            text-transform: uppercase;
+        }
+
+        /* 场景切换器 */
+        #realm-selector {
+            position: absolute;
+            bottom: 40px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            gap: 15px;
+            z-index: 20;
+            pointer-events: auto;
+            background: rgba(0, 0, 0, 0.3);
+            padding: 10px 20px;
+            border-radius: 50px;
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255,255,255,0.1);
+        }
+
+        .realm-btn {
+            background: transparent;
+            border: none;
+            color: rgba(255,255,255,0.6);
+            font-family: 'Noto Serif SC', serif;
+            font-size: 1rem;
+            cursor: pointer;
+            padding: 8px 16px;
+            transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+            position: relative;
+        }
+
+        .realm-btn:hover {
+            color: #fff;
+            transform: translateY(-2px);
+        }
+
+        .realm-btn.active {
+            color: #ffd700;
+            font-weight: bold;
+            text-shadow: 0 0 10px #ffd700;
+        }
+
+        .realm-btn.active::after {
+            content: '';
+            position: absolute;
+            bottom: 0;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 6px;
+            height: 6px;
+            background: #ffd700;
+            border-radius: 50%;
+            box-shadow: 0 0 10px #ffd700;
+        }
+
+        #loader {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: #ffd700;
+            font-size: 1.2rem;
+            letter-spacing: 3px;
+            font-family: 'Ma Shan Zheng', cursive;
+            z-index: 100;
+            transition: opacity 0.5s;
+        }
+
+        /* 速度线特效层 */
+        #speed-lines {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: radial-gradient(circle at center, transparent 0%, transparent 40%, rgba(255,255,255,0.05) 100%);
+            opacity: 0;
+            transition: opacity 1s;
+            pointer-events: none;
+            mix-blend-mode: screen;
+        }
+    </style>
+    
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tween.js/18.6.4/tween.umd.js"></script>
+</head>
+<body>
+
+    <div id="ui-layer">
+        <div id="title-box">
+            <h1>神游太虚</h1>
+            <p class="subtitle">Phoenix Odyssey</p>
+        </div>
+        <div id="speed-lines"></div>
+    </div>
+
+    <div id="realm-selector">
+        <button class="realm-btn active" onclick="switchRealm('void')">九天星河</button>
+        <button class="realm-btn" onclick="switchRealm('cloud')">云海仙境</button>
+        <button class="realm-btn" onclick="switchRealm('fire')">炼狱熔岩</button>
+    </div>
+
+    <div id="loader">灵兽唤醒中...</div>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+        import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+        import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+
+        // --- 全局变量 ---
+        let scene, camera, renderer, composer;
+        let phoenix, mixer, actions = {};
+        let currentRealm = 'void';
+        const clock = new THREE.Clock();
+        
+        // 环境元素组
+        const envGroups = {
+            void: new THREE.Group(),
+            cloud: new THREE.Group(),
+            fire: new THREE.Group()
+        };
+        
+        // 动态材质引用 (用于更新 Shader uniform time)
+        const activeUniforms = [];
+
+        init();
+        animate();
+
+        function init() {
+            // 1. 基础设置
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x050510);
+            scene.fog = new THREE.FogExp2(0x050510, 0.015);
+
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+            renderer.toneMapping = THREE.ACESFilmicToneMapping;
+            renderer.shadowMap.enabled = true;
+            document.body.appendChild(renderer.domElement);
+
+            camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 2000);
+            camera.position.set(0, 3, 12); // 正后方视角，模拟跟随飞行
+
+            // 2. 灯光
+            const ambient = new THREE.AmbientLight(0xffffff, 0.1);
+            scene.add(ambient);
+
+            // 主光 (模拟太阳/月亮)
+            const mainLight = new THREE.DirectionalLight(0xffffff, 2);
+            mainLight.position.set(10, 20, 10);
+            mainLight.castShadow = true;
+            mainLight.shadow.mapSize.width = 2048;
+            mainLight.shadow.mapSize.height = 2048;
+            scene.add(mainLight);
+            window.mainLight = mainLight; // 挂载到 window 方便 tween 调用
+
+            // 3. 后处理
+            const renderPass = new RenderPass(scene, camera);
+            const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 1.5, 0.4, 0.85);
+            bloomPass.threshold = 0.2;
+            bloomPass.strength = 0.6; // 默认强度
+            bloomPass.radius = 0.5;
+            window.bloomPass = bloomPass;
+
+            composer = new EffectComposer(renderer);
+            composer.addPass(renderPass);
+            composer.addPass(bloomPass);
+
+            // 4. 加载凤凰
+            const loader = new GLTFLoader();
+            loader.load('phoenix_bird.glb', (gltf) => {
+                phoenix = gltf.scene;
+                
+                // 调整凤凰
+                const box = new THREE.Box3().setFromObject(phoenix);
+                const size = box.getSize(new THREE.Vector3());
+                const scale = 5.0 / Math.max(size.x, size.y, size.z);
+                phoenix.scale.setScalar(scale);
+                
+                // 材质强化
+                phoenix.traverse(c => {
+                    if(c.isMesh) {
+                        c.castShadow = true;
+                        c.receiveShadow = true;
+                        if(c.material) {
+                            c.material.emissive = new THREE.Color(0xffaa00);
+                            c.material.emissiveIntensity = 0.2; // 自发光
+                        }
+                    }
+                });
+
+                scene.add(phoenix);
+
+                // 动画
+                mixer = new THREE.AnimationMixer(phoenix);
+                if(gltf.animations.length > 0) {
+                    const action = mixer.clipAction(gltf.animations[0]);
+                    action.timeScale = 1.2; // 飞得快一点
+                    action.play();
+                }
+
+                document.getElementById('loader').style.display = 'none';
+                
+                // 开始漂浮动画
+                startFloating();
+            });
+
+            // 5. 初始化三个场景
+            initVoidRealm();
+            initCloudRealm();
+            initFireRealm();
+
+            // 默认显示 Void
+            scene.add(envGroups.void);
+            envGroups.cloud.visible = false;
+            envGroups.fire.visible = false;
+            scene.add(envGroups.cloud);
+            scene.add(envGroups.fire);
+
+            // 6. 交互 (简单的鼠标移动控制相机微偏)
+            window.addEventListener('mousemove', onMouseMove);
+            window.addEventListener('resize', onResize);
+
+            // 暴露切换函数给 HTML 按钮
+            window.switchRealm = switchRealm;
+        }
+
+        // --- 场景构建函数 ---
+
+        // 1. 九天星河 (Void): 星光隧道 + 极光
+        function initVoidRealm() {
+            const group = envGroups.void;
+
+            // 星星粒子
+            const starsGeo = new THREE.BufferGeometry();
+            const positions = [];
+            const speeds = []; // 只要 Z 轴速度
+            for(let i=0; i<3000; i++) {
+                positions.push((Math.random()-0.5)*200); // x
+                positions.push((Math.random()-0.5)*200); // y
+                positions.push((Math.random()-0.5)*400 - 100); // z: 深度
+                speeds.push(Math.random() * 2 + 0.5);
+            }
+            starsGeo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+            starsGeo.userData = { speeds: speeds };
+
+            const starsMat = new THREE.PointsMaterial({
+                color: 0xaaccff,
+                size: 0.5,
+                transparent: true,
+                opacity: 0.8
+            });
+            const starSystem = new THREE.Points(starsGeo, starsMat);
+            starSystem.name = "starSystem";
+            group.add(starSystem);
+
+            // 简单的极光带 (使用透明管子模拟)
+            const curve = new THREE.CatmullRomCurve3([
+                new THREE.Vector3(-50, -10, -100),
+                new THREE.Vector3(-10, 5, -50),
+                new THREE.Vector3(20, -5, 0),
+                new THREE.Vector3(60, 10, 50)
+            ]);
+            const tubeGeo = new THREE.TubeGeometry(curve, 64, 2, 8, false);
+            const tubeMat = new THREE.MeshBasicMaterial({
+                color: 0x00ffff,
+                transparent: true,
+                opacity: 0.1,
+                side: THREE.DoubleSide,
+                blending: THREE.AdditiveBlending
+            });
+            const aurora = new THREE.Mesh(tubeGeo, tubeMat);
+            group.add(aurora);
+        }
+
+        // 2. 云海仙境 (Cloud): 底部流动的云平面 + 金色光芒
+        function initCloudRealm() {
+            const group = envGroups.cloud;
+
+            // 简单的“云”：大量白色半透明的圆片
+            const cloudGeo = new THREE.PlaneGeometry(15, 15);
+            // 简单画一个云纹理
+            const canvas = document.createElement('canvas');
+            canvas.width = 128; canvas.height = 128;
+            const ctx = canvas.getContext('2d');
+            const grad = ctx.createRadialGradient(64,64,0, 64,64,64);
+            grad.addColorStop(0, 'rgba(255,255,255,0.8)');
+            grad.addColorStop(1, 'rgba(255,255,255,0)');
+            ctx.fillStyle = grad;
+            ctx.fillRect(0,0,128,128);
+            const cloudTex = new THREE.CanvasTexture(canvas);
+
+            const cloudMat = new THREE.MeshBasicMaterial({
+                map: cloudTex,
+                transparent: true,
+                opacity: 0.4,
+                depthWrite: false,
+                side: THREE.DoubleSide
+            });
+
+            for(let i=0; i<30; i++) {
+                const mesh = new THREE.Mesh(cloudGeo, cloudMat);
+                mesh.rotation.x = -Math.PI / 2;
+                mesh.position.set(
+                    (Math.random()-0.5) * 80,
+                    -5 + Math.random() * 2, // 凤凰脚下
+                    (Math.random()-0.5) * 100 - 20
+                );
+                // 稍微随机旋转
+                mesh.rotation.z = Math.random() * Math.PI;
+                mesh.userData = { speed: Math.random() * 0.5 + 0.2 }; // 移动速度
+                group.add(mesh);
+            }
+        }
+
+        // 3. 炼狱熔岩 (Fire): 移动的线框地形 + 红色迷雾 + 上升火星
+        function initFireRealm() {
+            const group = envGroups.fire;
+
+            // 地形网格
+            const planeGeo = new THREE.PlaneGeometry(200, 200, 40, 40);
+            // 让地形有点起伏
+            const pos = planeGeo.attributes.position;
+            for(let i=0; i<pos.count; i++) {
+                pos.setZ(i, Math.random() * 5); // 高度噪点
+            }
+            planeGeo.computeVertexNormals();
+
+            const planeMat = new THREE.MeshBasicMaterial({
+                color: 0xff3300,
+                wireframe: true,
+                transparent: true,
+                opacity: 0.3
+            });
+            
+            // 两块地形循环拼接
+            const terrain1 = new THREE.Mesh(planeGeo, planeMat);
+            terrain1.rotation.x = -Math.PI / 2;
+            terrain1.position.y = -15;
+            terrain1.position.z = 0;
+            
+            const terrain2 = terrain1.clone();
+            terrain2.position.z = -200;
+
+            group.add(terrain1);
+            group.add(terrain2);
+            group.userData = { terrains: [terrain1, terrain2], speed: 40 };
+
+            // 火星粒子
+            const sparkGeo = new THREE.BufferGeometry();
+            const sparkPos = [];
+            for(let i=0; i<500; i++) {
+                sparkPos.push((Math.random()-0.5)*100);
+                sparkPos.push((Math.random()-0.5)*50 - 10);
+                sparkPos.push((Math.random()-0.5)*100);
+            }
+            sparkGeo.setAttribute('position', new THREE.Float32BufferAttribute(sparkPos, 3));
+            const sparkMat = new THREE.PointsMaterial({ color: 0xffaa00, size: 0.4, blending: THREE.AdditiveBlending });
+            const sparks = new THREE.Points(sparkGeo, sparkMat);
+            group.add(sparks);
+            group.userData.sparks = sparks;
+        }
+
+        // --- 逻辑控制 ---
+
+        function switchRealm(realmName) {
+            if(currentRealm === realmName) return;
+            currentRealm = realmName;
+
+            // 更新 UI 按钮状态
+            document.querySelectorAll('.realm-btn').forEach(btn => btn.classList.remove('active'));
+            event.target.classList.add('active');
+
+            // 1. 颜色与雾气过渡 (使用 Tween)
+            let targetBg, targetFog, targetLight;
+
+            if(realmName === 'void') {
+                targetBg = new THREE.Color(0x050510);
+                targetFog = new THREE.Color(0x050510);
+                targetLight = new THREE.Color(0xaaccff);
+                // 开启/关闭对应组的可见性 (为了平滑，最好是透明度渐变，这里简化为切换)
+            } else if (realmName === 'cloud') {
+                targetBg = new THREE.Color(0x87CEEB); // 天空蓝
+                targetFog = new THREE.Color(0xffffff); // 白雾
+                targetLight = new THREE.Color(0xffddaa); // 暖光
+            } else if (realmName === 'fire') {
+                targetBg = new THREE.Color(0x220500); // 暗红黑
+                targetFog = new THREE.Color(0x550000); // 红雾
+                targetLight = new THREE.Color(0xff4400); // 红光
+            }
+
+            new TWEEN.Tween(scene.background).to(targetBg, 1500).start();
+            new TWEEN.Tween(scene.fog.color).to(targetFog, 1500).start();
+            new TWEEN.Tween(window.mainLight.color).to(targetLight, 1500).start();
+
+            // 2. 场景物体切换
+            // 先隐藏所有，再显示目标？最好有个淡入淡出，这里简化处理：
+            // 实际上，我们可以一直让它们在场景里，只是改变透明度。
+            // 简单粗暴法：直接 toggle visible
+            
+            // 延迟一点点切换 visible，配合背景颜色过渡
+            setTimeout(() => {
+                envGroups.void.visible = (realmName === 'void');
+                envGroups.cloud.visible = (realmName === 'cloud');
+                envGroups.fire.visible = (realmName === 'fire');
+            }, 500);
+            
+            // 速度线特效
+            const lines = document.getElementById('speed-lines');
+            lines.style.opacity = 1;
+            setTimeout(() => lines.style.opacity = 0, 1000);
+            
+            // 凤凰爆发一下
+            if(window.bloomPass) {
+                new TWEEN.Tween(window.bloomPass)
+                    .to({ strength: 2.5 }, 300)
+                    .yoyo(true).repeat(1)
+                    .start();
+            }
+        }
+
+        // --- 动画循环更新 ---
+
+        function animate() {
+            requestAnimationFrame(animate);
+            
+            const delta = clock.getDelta();
+            const time = clock.getElapsedTime();
+
+            if(mixer) mixer.update(delta);
+            TWEEN.update();
+
+            // 1. 更新 Void 场景
+            if(envGroups.void.visible) {
+                const stars = envGroups.void.children.find(c => c.name === 'starSystem');
+                if(stars) {
+                    const positions = stars.geometry.attributes.position.array;
+                    const speeds = stars.geometry.userData.speeds;
+                    for(let i=0; i<positions.length/3; i++) {
+                        positions[i*3+2] += speeds[i] * 10; // 向 Z 正方向飞 (凤凰看起来向前飞)
+                        if(positions[i*3+2] > 100) {
+                            positions[i*3+2] = -300; // 循环
+                        }
+                    }
+                    stars.geometry.attributes.position.needsUpdate = true;
+                    stars.rotation.z += 0.001; // 整体旋转
+                }
+            }
+
+            // 2. 更新 Cloud 场景
+            if(envGroups.cloud.visible) {
+                envGroups.cloud.children.forEach(cloud => {
+                    cloud.position.z += cloud.userData.speed * 20 * delta;
+                    if(cloud.position.z > 50) cloud.position.z = -100;
+                });
+            }
+
+            // 3. 更新 Fire 场景
+            if(envGroups.fire.visible) {
+                const data = envGroups.fire.userData;
+                // 地形后退
+                if(data.terrains) {
+                    data.terrains.forEach(t => {
+                        t.position.z += data.speed * delta;
+                        if(t.position.z > 200) t.position.z -= 400;
+                    });
+                }
+                // 火星上升
+                if(data.sparks) {
+                    const pos = data.sparks.geometry.attributes.position.array;
+                    for(let i=0; i<pos.length/3; i++) {
+                        pos[i*3+1] += 0.2; // y 上升
+                        pos[i*3+2] += 0.5; // z 后退
+                        if(pos[i*3+1] > 20) pos[i*3+1] = -20;
+                        if(pos[i*3+2] > 50) pos[i*3+2] = -50;
+                    }
+                    data.sparks.geometry.attributes.position.needsUpdate = true;
+                }
+            }
+
+            // 4. 凤凰本身的漂浮感
+            if(phoenix) {
+                phoenix.position.y = Math.sin(time * 2) * 0.5;
+                phoenix.rotation.z = Math.sin(time) * 0.1; // 左右倾斜
+            }
+
+            composer.render();
+        }
+
+        // --- 辅助 ---
+        function startFloating() {
+            // 简单的上下浮动已经在 animate 里通过 Math.sin 实现了
+        }
+
+        function onMouseMove(event) {
+            // 鼠标控制相机轻微偏移，制造视差
+            const x = (event.clientX / window.innerWidth) * 2 - 1;
+            const y = -(event.clientY / window.innerHeight) * 2 + 1;
+            
+            // 目标位置
+            const targetX = x * 2;
+            const targetY = 3 + y * 2;
+
+            // 平滑移动相机
+            camera.position.x += (targetX - camera.position.x) * 0.05;
+            camera.position.y += (targetY - camera.position.y) * 0.05;
+            camera.lookAt(0, 0, 0);
+        }
+
+        function onResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            composer.setSize(window.innerWidth, window.innerHeight);
+        }
+    </script>
+</body>
+</html>
