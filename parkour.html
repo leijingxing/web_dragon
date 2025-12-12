@@ -1,0 +1,497 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Furina Parkour Runner</title>
+  <style>
+    html, body { margin:0; padding:0; width:100%; height:100%; overflow:hidden; background:#05070a; font-family: system-ui, sans-serif; }
+    #hud {
+      position: absolute; top: 12px; left: 12px; color: #e8f0ff;
+      background: rgba(0,0,0,0.55); padding: 10px 12px; border-radius: 8px;
+      z-index: 10; min-width: 180px;
+    }
+    #hud h1 { margin:0 0 6px 0; font-size: 15px; font-weight: 600; color:#7fd3ff; }
+    #hud p { margin: 4px 0; font-size: 13px; color:#c7d3e0; }
+    #center {
+      position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+      z-index: 20; pointer-events:none;
+    }
+    #panel {
+      pointer-events:auto; text-align:center; color:white;
+      background: rgba(0,0,0,0.75); padding: 18px 20px; border-radius: 12px; width: 340px;
+      box-shadow: 0 10px 40px rgba(0,0,0,0.6);
+    }
+    #panel h2 { margin:0 0 8px 0; font-size: 20px; }
+    #panel button {
+      margin-top: 10px; padding: 8px 14px; font-size: 14px; border:0; border-radius: 8px;
+      cursor:pointer; background:#2aa6ff; color:white;
+    }
+    #panel small { display:block; margin-top:6px; color:#9ab; }
+    canvas { display:block; }
+  </style>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
+</head>
+<body>
+  <div id="hud">
+    <h1>Furina Parkour Runner</h1>
+    <p>分数：<span id="score">0</span></p>
+    <p>速度：<span id="speed">0</span> m/s</p>
+    <p>操作：A/D 横移，Space 跳</p>
+  </div>
+
+  <div id="center" style="display:none;">
+    <div id="panel">
+      <h2 id="title">Game Over</h2>
+      <p id="reason">你掉下去了</p>
+      <p>最终分数：<b id="finalScore">0</b></p>
+      <button id="restart">重新开始</button>
+      <small>提示：尽量保持在平台中央</small>
+    </div>
+  </div>
+
+  <script type="module">
+    import * as THREE from "three";
+    import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+    import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
+
+    // ---------- 基础 Three 设置 ----------
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x05070a);
+    scene.fog = new THREE.Fog(0x05070a, 8, 45);
+
+    const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.05, 200);
+    camera.position.set(0, 2.2, 5);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    document.body.appendChild(renderer.domElement);
+
+    const pmrem = new THREE.PMREMGenerator(renderer);
+    scene.environment = pmrem.fromScene(new RoomEnvironment(renderer), 0.04).texture;
+
+    const hemi = new THREE.HemisphereLight(0xcfe9ff, 0x10131a, 1.2);
+    scene.add(hemi);
+    const dir = new THREE.DirectionalLight(0xffffff, 1.6);
+    dir.position.set(4, 6, 3);
+    dir.castShadow = false;
+    scene.add(dir);
+
+    // ---------- UI ----------
+    const scoreEl = document.getElementById("score");
+    const speedEl = document.getElementById("speed");
+    const centerEl = document.getElementById("center");
+    const titleEl = document.getElementById("title");
+    const reasonEl = document.getElementById("reason");
+    const finalScoreEl = document.getElementById("finalScore");
+    const restartBtn = document.getElementById("restart");
+
+    // ---------- 游戏参数 ----------
+    const laneHalfWidth = 1.8; // 可横移范围
+    const gravity = -18;
+    const jumpVelocity = 8.8;
+    const startSpeed = 5.5;
+    const maxSpeed = 12.0;
+    const speedUpPerSec = 0.12;
+    const segmentLength = 8;
+    const segmentWidth = 4;
+    const gapChance = 0.25;
+    const obstacleChance = 0.55;
+
+    // ---------- 输入 ----------
+    const input = { left:false, right:false, jump:false, jumpQueued:false };
+    window.addEventListener("keydown", (e) => {
+      if (e.code === "KeyA" || e.code === "ArrowLeft") input.left = true;
+      if (e.code === "KeyD" || e.code === "ArrowRight") input.right = true;
+      if (e.code === "Space") { input.jump = true; input.jumpQueued = true; }
+    });
+    window.addEventListener("keyup", (e) => {
+      if (e.code === "KeyA" || e.code === "ArrowLeft") input.left = false;
+      if (e.code === "KeyD" || e.code === "ArrowRight") input.right = false;
+      if (e.code === "Space") input.jump = false;
+    });
+
+    // ---------- 角色 ----------
+    const player = {
+      group: new THREE.Group(),
+      velocity: new THREE.Vector3(0, 0, 0),
+      onGround: false,
+      mixer: null,
+      actions: {},
+      currentAction: null,
+      visual: null,
+      runPhase: 0,
+      height: 1.6,
+      radius: 0.35
+    };
+    scene.add(player.group);
+
+    // 角色占位（加载前可用）
+    // 兼容性：部分 three 版本没有 CapsuleGeometry，做一个安全占位
+    const placeholderGeo = THREE.CapsuleGeometry
+      ? new THREE.CapsuleGeometry(player.radius, player.height - 2*player.radius, 6, 12)
+      : new THREE.CylinderGeometry(player.radius, player.radius, player.height, 10);
+    const placeholder = new THREE.Mesh(
+      placeholderGeo,
+      new THREE.MeshStandardMaterial({ color: 0x7fd3ff, roughness: 0.6, metalness: 0.1 })
+    );
+    placeholder.position.y = player.height * 0.5;
+    player.group.add(placeholder);
+    player.visual = placeholder;
+
+    function pickAction(clips, keywords) {
+      const lower = clips.map(c => c.name.toLowerCase());
+      for (const k of keywords) {
+        const idx = lower.findIndex(n => n.includes(k));
+        if (idx >= 0) return clips[idx];
+      }
+      return clips[0] || null;
+    }
+
+    async function loadPlayer() {
+      const loader = new GLTFLoader();
+      const gltf = await loader.loadAsync("genshin_impact_furina.glb");
+
+      player.group.clear();
+      const model = gltf.scene;
+      model.traverse(o => { if (o.isMesh) { o.castShadow = false; o.frustumCulled = true; }});
+      model.scale.setScalar(0.9);
+      model.position.y = 0;
+      // 面向前进方向（我们沿 -Z 方向跑）
+      model.rotation.y = Math.PI;
+      player.group.add(model);
+      player.visual = model;
+      player.visual.userData.baseY = player.visual.position.y;
+      player.visual.userData.baseRotZ = player.visual.rotation.z;
+
+      if (gltf.animations && gltf.animations.length) {
+        player.mixer = new THREE.AnimationMixer(model);
+        const clips = gltf.animations;
+        console.log("GLB animations:", clips.map(c => c.name));
+        const idle = pickAction(clips, ["idle", "stand"]);
+        const run = pickAction(clips, ["run", "walk", "jog"]);
+        const jump = pickAction(clips, ["jump"]);
+
+        const defaultClip = clips[0];
+        player.actions.idle = player.mixer.clipAction(idle || defaultClip);
+        player.actions.run = player.mixer.clipAction(run || defaultClip);
+        if (jump) player.actions.jump = player.mixer.clipAction(jump);
+
+        for (const a of Object.values(player.actions)) {
+          a.enabled = true;
+          a.setEffectiveWeight(1);
+          a.setEffectiveTimeScale(1);
+          a.loop = THREE.LoopRepeat;
+        }
+        if (player.actions.jump) {
+          player.actions.jump.loop = THREE.LoopOnce;
+          player.actions.jump.clampWhenFinished = true;
+        }
+        setPlayerAction("idle");
+      } else {
+        player.mixer = null;
+        player.actions = {};
+      }
+    }
+
+    function setPlayerAction(name) {
+      if (!player.mixer || player.currentAction === name) return;
+      const next = player.actions[name];
+      if (!next) return;
+      const prev = player.actions[player.currentAction];
+      player.currentAction = name;
+      if (prev) prev.fadeOut(0.12);
+      next.reset().fadeIn(0.12).play();
+    }
+
+    loadPlayer().catch(err => {
+      console.warn("Player load failed, using placeholder:", err);
+    });
+
+    // ---------- 跑酷关卡生成 ----------
+    const segments = [];
+    const obstacles = [];
+
+    const platformMat = new THREE.MeshStandardMaterial({ color: 0x1c2330, roughness: 0.9 });
+    const edgeMat = new THREE.MeshStandardMaterial({ color: 0x2f3a4a, roughness: 0.8 });
+    const obstacleMat = new THREE.MeshStandardMaterial({ color: 0xff7b7b, roughness: 0.5, metalness: 0.2 });
+
+    function makePlatform(zStart, hasGap) {
+      const group = new THREE.Group();
+      group.userData.zStart = zStart;
+      group.userData.hasGap = hasGap;
+
+      if (!hasGap) {
+        const geo = new THREE.BoxGeometry(segmentWidth, 0.4, segmentLength);
+        const mesh = new THREE.Mesh(geo, platformMat);
+        mesh.position.set(0, -0.2, zStart - segmentLength/2);
+        group.add(mesh);
+
+        const edgeGeo = new THREE.BoxGeometry(segmentWidth + 0.3, 0.06, segmentLength + 0.3);
+        const edge = new THREE.Mesh(edgeGeo, edgeMat);
+        edge.position.copy(mesh.position);
+        edge.position.y += 0.22;
+        group.add(edge);
+      }
+
+      return group;
+    }
+
+    function makeObstacle(zCenter) {
+      const kind = Math.random() < 0.6 ? "box" : "bar";
+      let mesh;
+      if (kind === "box") {
+        const w = 0.5 + Math.random() * 0.5;
+        const h = 0.6 + Math.random() * 0.6;
+        const d = 0.5 + Math.random() * 0.6;
+        mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), obstacleMat);
+        mesh.position.y = h/2;
+      } else {
+        const h = 0.5;
+        mesh = new THREE.Mesh(new THREE.BoxGeometry(2.2, h, 0.3), obstacleMat);
+        mesh.position.y = 1.0 + Math.random() * 0.4;
+      }
+
+      mesh.position.x = (Math.random() * 2 - 1) * (laneHalfWidth * 0.7);
+      mesh.position.z = zCenter;
+      mesh.userData.half = new THREE.Vector3(
+        (mesh.geometry.parameters.width || 1) / 2,
+        (mesh.geometry.parameters.height || 1) / 2,
+        (mesh.geometry.parameters.depth || 1) / 2
+      );
+      return mesh;
+    }
+
+    function ensureSegmentsAhead(playerZ) {
+      const neededAhead = 6;
+      // 保证前方始终有足够段数；lastZ 必须动态更新，否则会死循环
+      while (
+        segments.length < neededAhead ||
+        (segments.length && segments[segments.length - 1].userData.zStart - playerZ > -neededAhead * segmentLength)
+      ) {
+        const zStart = segments.length
+          ? segments[segments.length-1].userData.zStart - segmentLength
+          : 2;
+        const hasGap = Math.random() < gapChance && segments.length > 1;
+        const seg = makePlatform(zStart, hasGap);
+        scene.add(seg);
+        segments.push(seg);
+
+        if (!hasGap && Math.random() < obstacleChance) {
+          const zCenter = zStart - segmentLength/2 + (Math.random()*0.6 - 0.3)*segmentLength;
+          const obs = makeObstacle(zCenter);
+          scene.add(obs);
+          obstacles.push(obs);
+        }
+      }
+
+      // 清理远处
+      for (let i = segments.length - 1; i >= 0; i--) {
+        if (segments[i].userData.zStart - playerZ > 20) {
+          scene.remove(segments[i]);
+          segments.splice(i, 1);
+        }
+      }
+      for (let i = obstacles.length - 1; i >= 0; i--) {
+        if (obstacles[i].position.z - playerZ > 20) {
+          scene.remove(obstacles[i]);
+          obstacles.splice(i, 1);
+        }
+      }
+    }
+
+    function resetWorld() {
+      for (const s of segments) scene.remove(s);
+      for (const o of obstacles) scene.remove(o);
+      segments.length = 0;
+      obstacles.length = 0;
+      // 预生成起始平台
+      for (let i = 0; i < 6; i++) {
+        const zStart = 2 - i * segmentLength;
+        const seg = makePlatform(zStart, false);
+        scene.add(seg);
+        segments.push(seg);
+      }
+    }
+    resetWorld();
+
+    // ---------- 碰撞检测 ----------
+    const playerBox = new THREE.Box3();
+    const tempBox = new THREE.Box3();
+    const downRay = new THREE.Raycaster();
+
+    function updatePlayerBox() {
+      playerBox.setFromCenterAndSize(
+        new THREE.Vector3(player.group.position.x, player.group.position.y + player.height*0.5, player.group.position.z),
+        new THREE.Vector3(player.radius*2, player.height, player.radius*2)
+      );
+    }
+
+    function checkGround() {
+      downRay.set(
+        new THREE.Vector3(player.group.position.x, player.group.position.y + 0.05, player.group.position.z),
+        new THREE.Vector3(0, -1, 0)
+      );
+      downRay.far = 2.5;
+      const groundMeshes = [];
+      for (const s of segments) {
+        if (s.userData.hasGap) continue;
+        s.children.forEach(c => c.isMesh && groundMeshes.push(c));
+      }
+      const hits = downRay.intersectObjects(groundMeshes, false);
+      return hits.length ? hits[0] : null;
+    }
+
+    function collideObstacles() {
+      updatePlayerBox();
+      for (const obs of obstacles) {
+        tempBox.setFromCenterAndSize(
+          obs.position.clone(),
+          obs.userData.half.clone().multiplyScalar(2)
+        );
+        if (playerBox.intersectsBox(tempBox)) return obs;
+      }
+      return null;
+    }
+
+    // ---------- 游戏状态 ----------
+    let running = true;
+    let score = 0;
+    let speed = startSpeed;
+    let traveled = 0;
+
+    function gameOver(reason) {
+      running = false;
+      titleEl.textContent = "Game Over";
+      reasonEl.textContent = reason;
+      finalScoreEl.textContent = Math.floor(score);
+      centerEl.style.display = "flex";
+      setPlayerAction("idle");
+    }
+
+    function resetGame() {
+      running = true;
+      score = 0;
+      speed = startSpeed;
+      traveled = 0;
+      player.group.position.set(0, 0, 0);
+      player.velocity.set(0, 0, 0);
+      player.onGround = false;
+      input.jumpQueued = false;
+      resetWorld();
+      centerEl.style.display = "none";
+      setPlayerAction("idle");
+    }
+
+    restartBtn.addEventListener("click", resetGame);
+
+    // ---------- 相机跟随 ----------
+    const camOffset = new THREE.Vector3(0, 2.0, 5.2);
+    const camLookOffset = new THREE.Vector3(0, 1.2, -2.5);
+
+    // ---------- 主循环 ----------
+    const clock = new THREE.Clock();
+    function animate() {
+      requestAnimationFrame(animate);
+      const dt = Math.min(clock.getDelta(), 0.033);
+
+      if (player.mixer) player.mixer.update(dt);
+      // 如果模型没有动画，用简单的程序性摆动模拟跑动
+      if (!player.mixer && player.visual) {
+        if (running && player.onGround) {
+          player.runPhase += dt * speed * 0.9;
+          const bob = Math.sin(player.runPhase * 2.2) * 0.035;
+          const sway = Math.sin(player.runPhase * 2.2 + Math.PI/2) * 0.06;
+          player.visual.position.y = (player.visual.userData.baseY ?? 0) + bob;
+          player.visual.rotation.z = (player.visual.userData.baseRotZ ?? 0) + sway;
+        } else {
+          // 平滑回到基础姿态
+          const by = player.visual.userData.baseY ?? 0;
+          const bz = player.visual.userData.baseRotZ ?? 0;
+          player.visual.position.y = THREE.MathUtils.lerp(player.visual.position.y, by, 1 - Math.pow(0.001, dt));
+          player.visual.rotation.z = THREE.MathUtils.lerp(player.visual.rotation.z, bz, 1 - Math.pow(0.001, dt));
+        }
+      }
+
+      if (running) {
+        // 速度与分数
+        speed = Math.min(maxSpeed, speed + speedUpPerSec * dt);
+        traveled += speed * dt;
+        score += speed * dt * 10;
+
+        // 横移
+        const strafe = (input.right ? 1 : 0) - (input.left ? 1 : 0);
+        player.group.position.x += strafe * 4.2 * dt;
+        player.group.position.x = THREE.MathUtils.clamp(player.group.position.x, -laneHalfWidth, laneHalfWidth);
+
+        // 前进（沿 -Z 自动跑）
+        player.group.position.z -= speed * dt;
+
+        // 重力
+        player.velocity.y += gravity * dt;
+        player.group.position.y += player.velocity.y * dt;
+
+        // 地面检测/落地
+        const groundHit = checkGround();
+        if (groundHit && player.velocity.y <= 0) {
+          const groundY = groundHit.point.y;
+          if (player.group.position.y < groundY) {
+            player.group.position.y = groundY;
+            player.velocity.y = 0;
+            if (!player.onGround) setPlayerAction("run");
+            player.onGround = true;
+          }
+        } else {
+          player.onGround = false;
+        }
+
+        // 跳跃
+        if (input.jumpQueued && player.onGround) {
+          player.velocity.y = jumpVelocity;
+          player.onGround = false;
+          input.jumpQueued = false;
+          setPlayerAction("jump");
+        }
+        if (!input.jump && player.onGround) setPlayerAction("run");
+
+        // 关卡生成
+        ensureSegmentsAhead(player.group.position.z);
+
+        // 障碍碰撞
+        const hitObs = collideObstacles();
+        if (hitObs) gameOver("撞到障碍物了");
+
+        // 掉落判定
+        if (player.group.position.y < -4) gameOver("你掉下去了");
+      }
+
+      // 相机平滑跟随
+      const desiredCam = player.group.position.clone().add(camOffset);
+      camera.position.lerp(desiredCam, 1 - Math.pow(0.001, dt));
+      const lookAt = player.group.position.clone().add(camLookOffset);
+      camera.lookAt(lookAt);
+
+      scoreEl.textContent = Math.floor(score);
+      speedEl.textContent = speed.toFixed(1);
+
+      renderer.render(scene, camera);
+    }
+    animate();
+
+    window.addEventListener("resize", () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+  </script>
+</body>
+</html>
