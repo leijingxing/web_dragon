@@ -22,7 +22,7 @@
             background: rgba(0,0,0,0.7);
             padding: 15px;
             border-radius: 8px;
-            pointer-events: none;
+            pointer-events: auto;
             max-width: 300px;
             z-index: 10;
         }
@@ -48,7 +48,7 @@
         "imports": {
             "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
             "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/",
-            "@lumaai/luma-web": "https://unpkg.com/@lumaai/luma-web@0.2.0/dist/library/luma-web.js"
+            "@lumaai/luma-web": "https://unpkg.com/@lumaai/luma-web@0.2.0/dist/library/luma-web.module.js"
         }
     }
     </script>
@@ -58,6 +58,14 @@
         <h1>Luma AI WebGL Library</h1>
         <p>这是目前 Web 端最稳定的 Gaussian Splatting 实现。</p>
         <p>左键旋转 • 滚轮缩放 • 右键平移</p>
+        <p id="status" style="margin-top:8px;color:#aaa;">准备加载…</p>
+        <label style="display:block;margin-top:10px;font-size:0.9rem;">
+            本地 splat 文件：
+            <input id="fileInput" type="file" accept=".splat,.ply" style="display:block;margin-top:6px;color:white;">
+        </label>
+        <p style="font-size:0.8rem;color:#999;margin-top:8px;">
+            也可用 URL 参数：<code>?src=你的.splat或.ply直链</code>
+        </p>
     </div>
 
     <script type="module">
@@ -82,19 +90,59 @@
         const controls = new OrbitControls(camera, renderer.domElement);
         controls.enableDamping = true;
 
-        // 2. 加载 Luma Splats
-        // 这是一个公开的 Luma 场景 URL
-        const splats = new LumaSplatsThree({
-            source: 'https://lumalabs.ai/capture/d80d4876-cf74-4b8a-8b5b-49ffac44cd4a'
+        const statusEl = document.getElementById('status');
+        const fileInput = document.getElementById('fileInput');
+
+        function setStatus(text, color = '#aaa') {
+            statusEl.textContent = text;
+            statusEl.style.color = color;
+        }
+
+        let splats = null;
+        function loadSplats(source) {
+            if (splats) {
+                scene.remove(splats);
+                splats.dispose();
+                splats = null;
+            }
+
+            setStatus('加载中… 0%');
+            splats = new LumaSplatsThree({
+                source,
+                onProgress: (e) => setStatus(`加载中… ${Math.round(e.progress * 100)}%`),
+                onLoad: () => setStatus('加载完成', '#00ffaa')
+            });
+
+            scene.add(splats);
+        }
+
+        // 2. 选择数据源
+        const params = new URLSearchParams(window.location.search);
+        const srcParam = params.get('src');
+        if (srcParam) {
+            loadSplats(srcParam);
+        } else {
+            // 默认尝试 Luma capture（可能会被 500/CORS 拦）
+            loadSplats({ captureUrl: 'https://lumalabs.ai/capture/83e9aae8-7023-448e-83a6-53ccb377ec86' });
+        }
+
+        fileInput.addEventListener('change', (ev) => {
+            const file = ev.target.files?.[0];
+            if (!file) return;
+            const url = URL.createObjectURL(file);
+            loadSplats(url);
         });
-        
-        scene.add(splats);
 
         // 3. 渲染循环
         function animate() {
             requestAnimationFrame(animate);
             controls.update();
-            renderer.render(scene, camera);
+            try {
+                renderer.render(scene, camera);
+            } catch (err) {
+                setStatus(`渲染失败：${err?.message || err}`, '#ff8888');
+                console.error(err);
+            }
         }
         
         window.addEventListener('resize', () => {
